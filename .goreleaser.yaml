@@ -1,0 +1,44 @@
+# .goreleaser.yaml
+version: 2
+project_name: okayrun-cli
+
+before:
+  hooks:
+    - go mod tidy
+
+builds:
+  - id: okay-cli
+    dir: .
+    main: .
+    binary: okay
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - linux
+      - darwin
+      - windows
+    goarch:
+      - amd64
+      - arm64
+
+archives:
+  - formats:
+      - tar.gz
+    # Use zip for Windows
+    format_overrides:
+      - goos: windows
+        formats:
+          - zip
+    name_template: "okay_{{ .Os }}_{{ .Arch }}"
+    files:
+      - none*
+
+checksum:
+  name_template: 'checksums.txt'
+
+changelog:
+  sort: asc
+  filters:
+    exclude:
+      - '^docs:'
+      - '^test:'
