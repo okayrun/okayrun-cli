@@ -123,6 +123,15 @@ func main() {
 			return
 		}
 		handleSave(os.Args[2], os.Args[3])
+	case "images":
+		handleImages()
+	case "rmi":
+		if len(os.Args) < 3 {
+			fmt.Println("Error: Missing image name.")
+			fmt.Println("Usage: okay rmi <image-name>")
+			return
+		}
+		handleRMI(os.Args[2])
 	default:
 		fmt.Printf("Unknown command: %s\n", os.Args[1])
 		printUsage()
@@ -143,6 +152,8 @@ Commands:
   run <distro>       Provision and enter an interactive console session (alpine|ubuntu|debian|arch)
   stop <session-id>  Stop and terminate a running microVM session cleanly
   save <id> <name>   Save a running microVM session's active disk as a custom image snapshot
+  images             List your base and custom virtual machine images
+  rmi <name>         Remove a custom image snapshot
   help               Show this manual page
 `)
 }
@@ -759,4 +770,103 @@ func handleRun(distro string, cmdArgs []string) {
 			fmt.Println(err)
 		}
 	}
+}
+
+type APIImage struct {
+	Name      string    `json:"name"`
+	Type      string    `json:"type"`
+	SizeBytes int64     `json:"size_bytes"`
+	CreatedAt time.Time `json:"created_at"`
+}
+
+func handleImages() {
+	cfg, err := loadConfig()
+	if err != nil {
+		fmt.Println("Error: You are not logged in. Please run: okay login")
+		return
+	}
+
+	req, _ := http.NewRequest("GET", APIBaseURL+"/v1/images", nil)
+	req.Header.Set("Authorization", "Bearer "+cfg.Token)
+
+	client := &http.Client{Timeout: 5 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		fmt.Printf("Error: %v\n", err)
+		return
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		var errData map[string]string
+		_ = json.NewDecoder(resp.Body).Decode(&errData)
+		if errData["error"] != "" {
+			fmt.Printf("Error: %s\n", errData["error"])
+		} else {
+			fmt.Printf("Error: List images failed with status %d\n", resp.StatusCode)
+		}
+		return
+	}
+
+	var images []APIImage
+	_ = json.NewDecoder(resp.Body).Decode(&images)
+
+	fmt.Printf("%-20s %-10s %-12s %-20s\n", "IMAGE NAME", "TYPE", "SIZE", "CREATED AT")
+	fmt.Println(strings.Repeat("-", 65))
+	for _, img := range images {
+		sizeStr := "N/A"
+		if img.Type == "custom" {
+			sizeStr = formatSize(img.SizeBytes)
+		}
+		dateStr := "N/A"
+		if img.Type == "custom" {
+			dateStr = img.CreatedAt.Local().Format("2006-01-02 15:04:05")
+		}
+		fmt.Printf("%-20s %-10s %-12s %-20s\n", img.Name, img.Type, sizeStr, dateStr)
+	}
+}
+
+func handleRMI(imageName string) {
+	cfg, err := loadConfig()
+	if err != nil {
+		fmt.Println("Error: You are not logged in. Please run: okay login")
+		return
+	}
+
+	req, _ := http.NewRequest("DELETE", fmt.Sprintf("%s/v1/images/%s", APIBaseURL, imageName), nil)
+	req.Header.Set("Authorization", "Bearer "+cfg.Token)
+
+	client := &http.Client{Timeout: 5 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		fmt.Printf("Error: %v\n", err)
+		return
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		var errData map[string]string
+		_ = json.NewDecoder(resp.Body).Decode(&errData)
+		if errData["error"] != "" {
+			fmt.Printf("Error: %s\n", errData["error"])
+		} else {
+			fmt.Printf("Error: Delete image failed with status %d\n", resp.StatusCode)
+		}
+		return
+	}
+
+	fmt.Printf("✓ Image '%s' removed successfully.\n", imageName)
+}
+
+func formatSize(bytes int64) string {
+	const unit = 1024
+	if bytes < unit {
+		return fmt.Sprintf("%d B", bytes)
+	}
+	div, exp := int64(unit), 0
+	for n := bytes / unit; n >= unit; n /= unit {
+		div *= unit
+		exp++
+	}
+	return fmt.Sprintf("%.1f %cB", float64(bytes)/float64(div), "KMGTPE"[exp])
 }
