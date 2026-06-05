@@ -105,10 +105,16 @@ func main() {
 	case "run":
 		if len(os.Args) < 3 {
 			fmt.Println("Error: Missing distro argument.")
-			fmt.Println("Usage: okay run <alpine|ubuntu|debian|arch> [command...]")
+			fmt.Println("Usage: okay run [--verbose] <distro> [command...]")
 			return
 		}
-		handleRun(os.Args[2], os.Args[3:])
+		verbose, distro, cmdArgs := parseRunArgs(os.Args[2:])
+		if distro == "" {
+			fmt.Println("Error: Missing distro argument.")
+			fmt.Println("Usage: okay run [--verbose] <distro> [command...]")
+			return
+		}
+		handleRun(distro, cmdArgs, verbose)
 	case "stop":
 		if len(os.Args) < 3 {
 			fmt.Println("Error: Missing session ID argument.")
@@ -149,7 +155,8 @@ Commands:
   auth <token>       Manually save an authentication token (JWT)
   balance            Display your available credit balance
   list               List your currently active microVM sessions
-  run <distro>       Provision and enter an interactive console session (alpine|ubuntu|debian|arch)
+  run <distro>       Provision and enter an interactive console session (alpine|ubuntu|debian|arch|fedora|void...)
+  run --verbose      Show raw boot console output instead of suppressing it (useful for diagnostics)
   stop <session-id>  Stop and terminate a running microVM session cleanly
   save <id> <name>   Save a running microVM session's active disk as a custom image snapshot
   images             List your base and custom virtual machine images
@@ -468,13 +475,13 @@ func handleSave(sessionID, name string) {
 // --- Terminal Bridge Seam & Implementation (Candidate 3) ---
 
 type TerminalBridge interface {
-	ConnectInteractive(wsURL string) error
+	ConnectInteractive(wsURL string, verbose bool) error
 	ExecuteCommand(wsURL, commandStr string) error
 }
 
 type RawOSTerminalBridge struct{}
 
-func (r *RawOSTerminalBridge) ConnectInteractive(wsURL string) error {
+func (r *RawOSTerminalBridge) ConnectInteractive(wsURL string, verbose bool) error {
 	dialer := websocket.Dialer{HandshakeTimeout: 5 * time.Second}
 	ws, _, err := dialer.Dial(wsURL, nil)
 	if err != nil {
@@ -511,7 +518,7 @@ func (r *RawOSTerminalBridge) ConnectInteractive(wsURL string) error {
 
 	go func() {
 		var bootBuf string
-		isBooting := true
+		isBooting := !verbose // in verbose mode, never enter boot-buffering; stream everything directly
 		readyMarker := "===OKAYRUN_READY==="
 		bootStart := time.Now()
 
@@ -655,6 +662,25 @@ func (r *RawOSTerminalBridge) ExecuteCommand(wsURL, commandStr string) error {
 	return nil
 }
 
+// parseRunArgs splits the os.Args slice passed after "run" into its components.
+// A --verbose flag appearing anywhere in args is extracted; the first remaining
+// positional argument is the distro; any remaining arguments are cmdArgs.
+func parseRunArgs(args []string) (verbose bool, distro string, cmdArgs []string) {
+	var positional []string
+	for _, a := range args {
+		if a == "--verbose" {
+			verbose = true
+		} else {
+			positional = append(positional, a)
+		}
+	}
+	if len(positional) > 0 {
+		distro = positional[0]
+		cmdArgs = positional[1:]
+	}
+	return
+}
+
 // CleanBootOutput buffers the VM's console output until the ready marker is found.
 // It returns:
 // - the output that should be displayed (if any)
@@ -701,7 +727,7 @@ var termBridge TerminalBridge = &RawOSTerminalBridge{}
 
 // --- Run Command (Terminal Raw WebSocket connection) ---
 
-func handleRun(distro string, cmdArgs []string) {
+func handleRun(distro string, cmdArgs []string, verbose bool) {
 	cfg, err := loadConfig()
 	if err != nil {
 		fmt.Println("Error: You are not logged in. Please run: okay login")
@@ -771,10 +797,13 @@ func handleRun(distro string, cmdArgs []string) {
 		fmt.Printf("Subnet IP:   %s\n", s.VMIP)
 		fmt.Printf("Billing:     $0.01 / hour, billed dynamically per second\n")
 		fmt.Printf("Instruction: Standard distro credentials apply. Simply run 'exit/logout' to close and stop the VM.\n\n")
+		if verbose {
+			fmt.Printf("(verbose boot mode: raw console output enabled)\n\n")
+		}
 		fmt.Printf("⚡ MicroVM booting...\n\n")
 
 		wsURL := fmt.Sprintf("%s/sessions/%s/console?token=%s", WSBaseURL, s.ID, cfg.Token)
-		err = termBridge.ConnectInteractive(wsURL)
+		err = termBridge.ConnectInteractive(wsURL, verbose)
 		if err != nil {
 			fmt.Println(err)
 		}
