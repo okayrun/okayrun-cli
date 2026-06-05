@@ -75,3 +75,55 @@ func TestShouldExitBootMode_NotYet(t *testing.T) {
 		t.Errorf("expected false when buf is small and boot just started")
 	}
 }
+
+func TestParseRunArgs_NoFlag(t *testing.T) {
+	verbose, distro, cmdArgs := parseRunArgs([]string{"fedora"})
+	if verbose {
+		t.Errorf("expected verbose=false, got true")
+	}
+	if distro != "fedora" {
+		t.Errorf("expected distro=%q, got %q", "fedora", distro)
+	}
+	if len(cmdArgs) != 0 {
+		t.Errorf("expected empty cmdArgs, got %v", cmdArgs)
+	}
+}
+
+func TestParseRunArgs_VerboseFlagFirst(t *testing.T) {
+	verbose, distro, cmdArgs := parseRunArgs([]string{"--verbose", "fedora"})
+	if !verbose {
+		t.Errorf("expected verbose=true, got false")
+	}
+	if distro != "fedora" {
+		t.Errorf("expected distro=%q, got %q", "fedora", distro)
+	}
+	if len(cmdArgs) != 0 {
+		t.Errorf("expected empty cmdArgs, got %v", cmdArgs)
+	}
+}
+
+func TestParseRunArgs_VerboseFlagLast(t *testing.T) {
+	verbose, distro, cmdArgs := parseRunArgs([]string{"fedora", "--verbose"})
+	if !verbose {
+		t.Errorf("expected verbose=true, got false")
+	}
+	if distro != "fedora" {
+		t.Errorf("expected distro=%q, got %q", "fedora", distro)
+	}
+	if len(cmdArgs) != 0 {
+		t.Errorf("expected empty cmdArgs, got %v", cmdArgs)
+	}
+}
+
+func TestParseRunArgs_VerboseWithCommand(t *testing.T) {
+	verbose, distro, cmdArgs := parseRunArgs([]string{"--verbose", "fedora", "echo hi"})
+	if !verbose {
+		t.Errorf("expected verbose=true, got false")
+	}
+	if distro != "fedora" {
+		t.Errorf("expected distro=%q, got %q", "fedora", distro)
+	}
+	if len(cmdArgs) != 1 || cmdArgs[0] != "echo hi" {
+		t.Errorf("expected cmdArgs=[\"echo hi\"], got %v", cmdArgs)
+	}
+}
