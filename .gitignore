@@ -1,3 +1,6 @@
 # Build outputs
 bin/
 okay
+
+# Test Logs
+logs/

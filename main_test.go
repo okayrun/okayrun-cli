@@ -1,6 +1,8 @@
 package main
 
 import (
+	"os"
+	"strings"
 	"testing"
 	"time"
 )
@@ -125,5 +127,55 @@ func TestParseRunArgs_VerboseWithCommand(t *testing.T) {
 	}
 	if len(cmdArgs) != 1 || cmdArgs[0] != "echo hi" {
 		t.Errorf("expected cmdArgs=[\"echo hi\"], got %v", cmdArgs)
+	}
+}
+
+func TestLoadConfig_EnvOverride(t *testing.T) {
+	os.Setenv("OKAY_TOKEN", "test-env-token")
+	defer os.Unsetenv("OKAY_TOKEN")
+
+	cfg, err := loadConfig()
+	if err != nil {
+		t.Fatalf("unexpected error loading config with env override: %v", err)
+	}
+	if cfg.Token != "test-env-token" {
+		t.Errorf("expected Token = 'test-env-token', got %q", cfg.Token)
+	}
+}
+
+func TestGetConfigPath_Fallback(t *testing.T) {
+	path := getConfigPath()
+	if !strings.HasSuffix(path, ".okay.json") {
+		t.Errorf("expected config path to end with .okay.json, got %q", path)
+	}
+}
+
+func TestSaveAndLoadConfig(t *testing.T) {
+	tempDir, err := os.MkdirTemp("", "okayrun-cli-test-*")
+	if err != nil {
+		t.Fatalf("failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tempDir)
+
+	// Override HOME env variable so getConfigPath uses our temp directory
+	origHome := os.Getenv("HOME")
+	os.Setenv("HOME", tempDir)
+	defer os.Setenv("HOME", origHome)
+
+	err = saveConfig("secret-token-123", "test@user.io")
+	if err != nil {
+		t.Fatalf("saveConfig failed: %v", err)
+	}
+
+	cfg, err := loadConfig()
+	if err != nil {
+		t.Fatalf("loadConfig failed: %v", err)
+	}
+
+	if cfg.Token != "secret-token-123" {
+		t.Errorf("expected Token = 'secret-token-123', got %q", cfg.Token)
+	}
+	if cfg.Email != "test@user.io" {
+		t.Errorf("expected Email = 'test@user.io', got %q", cfg.Email)
 	}
 }
