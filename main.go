@@ -155,6 +155,13 @@ func main() {
 			return
 		}
 		handleStop(os.Args[2])
+	case "exec":
+		if len(os.Args) < 3 {
+			fmt.Println("Error: Missing session ID argument.")
+			fmt.Println("Usage: okay exec <session-id> [command...]")
+			return
+		}
+		handleExec(os.Args[2], os.Args[3:])
 	case "save":
 		if len(os.Args) < 4 {
 			fmt.Println("Error: Missing session ID or target snapshot name.")
@@ -191,6 +198,7 @@ Commands:
   compose            Docker Compose compatibility layer (up|down|logs)
   run <image>        Provision and enter an interactive console session (alpine|ubuntu|debian|arch|fedora|void...)
   run --verbose      Show raw boot console output instead of suppressing it (useful for diagnostics)
+  exec <id> [cmd...] Spawn a concurrent SSH shell or command inside a running microVM
   stop <session-id>  Stop and terminate a running microVM session cleanly
   save <id> <name>   Save a running microVM session's active disk as a custom image snapshot
   images             List your base and custom virtual machine images
@@ -401,6 +409,8 @@ type Session struct {
 	StackID           string            `json:"stack_id,omitempty"`
 	ServiceName       string            `json:"service_name,omitempty"`
 	Siblings          map[string]string `json:"siblings,omitempty"`
+	Entrypoint        []string          `json:"entrypoint,omitempty"`
+	Cmd               []string          `json:"cmd,omitempty"`
 }
 
 func handlePS(all bool) {
@@ -525,7 +535,7 @@ func handleSave(sessionID, name string) {
 // --- Terminal Bridge Seam & Implementation (Candidate 3) ---
 
 type TerminalBridge interface {
-	ConnectInteractive(wsURL string, verbose bool, token, sessionID string) error
+	ConnectInteractive(wsURL string, verbose bool, token, sessionID string, entrypoint, cmd []string) error
 	ExecuteCommand(wsURL, commandStr string, token, sessionID string) error
 }
 
@@ -545,7 +555,7 @@ func terminateSession(sessionID, token string) {
 	}
 }
 
-func (r *RawOSTerminalBridge) ConnectInteractive(wsURL string, verbose bool, token, sessionID string) error {
+func (r *RawOSTerminalBridge) ConnectInteractive(wsURL string, verbose bool, token, sessionID string, entrypoint, cmd []string) error {
 	dialer := websocket.Dialer{HandshakeTimeout: 5 * time.Second}
 	ws, _, err := dialer.Dial(wsURL, nil)
 	if err != nil {
@@ -633,11 +643,34 @@ func (r *RawOSTerminalBridge) ConnectInteractive(wsURL string, verbose bool, tok
 		signal.Stop(sigWin)
 	}()
 
-	if err := session.Shell(); err != nil {
-		return fmt.Errorf("failed to start shell: %v", err)
+	// Assemble command line if entrypoint or cmd are specified
+	var cmdList []string
+	cmdList = append(cmdList, entrypoint...)
+	cmdList = append(cmdList, cmd...)
+
+	if len(cmdList) == 0 {
+		if err := session.Shell(); err != nil {
+			return fmt.Errorf("failed to start shell: %v", err)
+		}
+	} else {
+		var quotedArgs []string
+		for _, arg := range cmdList {
+			escaped := strings.ReplaceAll(arg, "\\", "\\\\")
+			escaped = strings.ReplaceAll(escaped, "\"", "\\\"")
+			quotedArgs = append(quotedArgs, `"`+escaped+`"`)
+		}
+		commandStr := strings.Join(quotedArgs, " ")
+		if err := session.Start(commandStr); err != nil {
+			return fmt.Errorf("failed to run command: %v", err)
+		}
 	}
 
-	_ = session.Wait()
+	err = session.Wait()
+	if err != nil {
+		if exitErr, ok := err.(*ssh.ExitError); ok {
+			os.Exit(exitErr.ExitStatus())
+		}
+	}
 	return nil
 }
 
@@ -934,7 +967,7 @@ func handleRun(image string, cmdArgs []string, verbose bool, ports []string) {
 		fmt.Printf("⚡ MicroVM booting...\n\n")
 
 		wsURL := fmt.Sprintf("%s/sessions/%s/console?token=%s", WSBaseURL, s.ID, cfg.Token)
-		err = termBridge.ConnectInteractive(wsURL, verbose, cfg.Token, s.ID)
+		err = termBridge.ConnectInteractive(wsURL, verbose, cfg.Token, s.ID, s.Entrypoint, s.Cmd)
 		if err != nil {
 			fmt.Println(err)
 		}
@@ -1044,4 +1077,48 @@ func formatSize(bytes int64) string {
 		exp++
 	}
 	return fmt.Sprintf("%.1f %cB", float64(bytes)/float64(div), "KMGTPE"[exp])
+}
+
+func handleExec(sessionID string, cmdArgs []string) {
+	cfg, err := loadConfig()
+	if err != nil {
+		fmt.Println("Error: You are not logged in. Please run: okay login")
+		return
+	}
+
+	req, _ := http.NewRequest("GET", fmt.Sprintf("%s/v1/sessions/%s", APIBaseURL, sessionID), nil)
+	req.Header.Set("Authorization", "Bearer "+cfg.Token)
+
+	client := &http.Client{Timeout: 5 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		fmt.Printf("Error: %v\n", err)
+		return
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		fmt.Printf("Error: Session %s not found or expired.\n", sessionID)
+		return
+	}
+
+	var s Session
+	_ = json.NewDecoder(resp.Body).Decode(&s)
+
+	if s.Status != "RUNNING" {
+		fmt.Printf("Error: Session %s is not running (status: %s).\n", sessionID, s.Status)
+		return
+	}
+
+	wsURL := fmt.Sprintf("%s/sessions/%s/console?token=%s", WSBaseURL, s.ID, cfg.Token)
+	
+	execCmd := cmdArgs
+	if len(execCmd) == 0 {
+		execCmd = []string{"/bin/sh"}
+	}
+
+	err = termBridge.ConnectInteractive(wsURL, false, cfg.Token, s.ID, nil, execCmd)
+	if err != nil {
+		fmt.Println(err)
+	}
 }
