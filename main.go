@@ -573,7 +573,10 @@ func (r *RawOSTerminalBridge) ConnectInteractive(wsURL string, verbose bool, tok
 	if err != nil {
 		return fmt.Errorf("Error configuring terminal to RAW mode: %v", err)
 	}
-	defer term.Restore(stdinFd, oldState)
+	defer func() {
+		term.Restore(stdinFd, oldState)
+		fmt.Print("\033[0m\033[?25h\033[?1049l\033[r\033[H")
+	}()
 
 	sshConfig := &ssh.ClientConfig{
 		User: "root",
@@ -601,6 +604,9 @@ func (r *RawOSTerminalBridge) ConnectInteractive(wsURL string, verbose bool, tok
 
 	w, h, err := term.GetSize(stdinFd)
 	if err != nil {
+		if verbose {
+			fmt.Fprintf(os.Stderr, "Warning: could not detect terminal size, using default 80x24\n")
+		}
 		w, h = 80, 24
 	}
 
@@ -671,6 +677,7 @@ func (r *RawOSTerminalBridge) ConnectInteractive(wsURL string, verbose bool, tok
 	err = session.Wait()
 	if err != nil {
 		if exitErr, ok := err.(*ssh.ExitError); ok {
+			term.Restore(stdinFd, oldState)
 			os.Exit(exitErr.ExitStatus())
 		}
 	}
@@ -893,6 +900,7 @@ func handleRun(image string, cmdArgs []string, verbose bool, ports []string) {
 	isInteractive := len(cmdArgs) == 0
 
 	if isInteractive {
+		fmt.Print("\033[0m\033[?25h\n")
 		fmt.Printf("[1/3] Checking account balance and credentials...\n")
 	}
 	// Make sure balance exists
