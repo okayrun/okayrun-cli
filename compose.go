@@ -22,6 +22,19 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+var (
+	logColors = []string{
+		"\033[1;36m", // Cyan
+		"\033[1;35m", // Magenta
+		"\033[1;32m", // Green
+		"\033[1;33m", // Yellow
+		"\033[1;34m", // Blue
+		"\033[1;31m", // Red
+	}
+	logColorReset = "\033[0m"
+	stdoutMu      sync.Mutex
+)
+
 type EnvList []string
 
 func (e *EnvList) UnmarshalYAML(value *yaml.Node) error {
@@ -331,19 +344,10 @@ func handleComposeRun(composePath string, verbose bool) {
 		os.Exit(0)
 	}()
 
-	colors := []string{
-		"\033[1;36m", // Cyan
-		"\033[1;35m", // Magenta
-		"\033[1;32m", // Green
-		"\033[1;33m", // Yellow
-		"\033[1;34m", // Blue
-		"\033[1;31m", // Red
-	}
-
 	var wg sync.WaitGroup
 	for i, s := range stackResp.Sessions {
 		wg.Add(1)
-		color := colors[i%len(colors)]
+		color := logColors[i%len(logColors)]
 		wsURL := fmt.Sprintf("%s/sessions/%s/console?token=%s", WSBaseURL, s.ID, cfg.Token)
 		go StreamLogs(s.ServiceName, color, wsURL, &wg, stopChan, true)
 	}
@@ -376,7 +380,9 @@ func StreamLogs(serviceName string, color string, wsURL string, wg *sync.WaitGro
 	}
 
 	if err != nil {
-		fmt.Printf("%s[%s]%s Failed to stream logs: %v\n", color, serviceName, "\033[0m", err)
+		stdoutMu.Lock()
+		fmt.Printf("%s[%s]%s Failed to stream logs: %v\n", color, serviceName, logColorReset, err)
+		stdoutMu.Unlock()
 		return
 	}
 	defer ws.Close()
@@ -397,11 +403,22 @@ func StreamLogs(serviceName string, color string, wsURL string, wg *sync.WaitGro
 
 	var lineBuf strings.Builder
 	readyMarker := "===OKAYRUN_READY==="
-	resetColor := "\033[0m"
 
 	var timeoutChan <-chan time.Time
 	if !follow {
 		timeoutChan = time.After(1500 * time.Millisecond)
+	}
+
+	flushLine := func() {
+		if lineBuf.Len() > 0 {
+			line := lineBuf.String()
+			if len(strings.TrimSpace(line)) > 0 {
+				stdoutMu.Lock()
+				fmt.Printf("%s[%s]%s %s\n", color, serviceName, logColorReset, line)
+				stdoutMu.Unlock()
+			}
+			lineBuf.Reset()
+		}
 	}
 
 	for {
@@ -414,34 +431,24 @@ func StreamLogs(serviceName string, color string, wsURL string, wg *sync.WaitGro
 			msgStr = strings.ReplaceAll(msgStr, readyMarker, "")
 
 			for _, char := range msgStr {
-				if char == '\n' {
-					line := lineBuf.String()
-					line = strings.TrimRight(line, "\r")
-					if len(strings.TrimSpace(line)) > 0 {
-						fmt.Printf("%s[%s]%s %s\n", color, serviceName, resetColor, line)
-					}
-					lineBuf.Reset()
-				} else {
+				if char == '\r' {
+					// Ignore \r — kernel uses \r\n line endings. Don't reset
+					// lineBuf or the line content is destroyed before \n flushes it.
+					continue
+				} else if char == '\n' {
+					flushLine()
+				} else if char == '\x1b' {
+					// Skip ANSI escape sequences (ESC[...m, ESC[...H, etc.)
+					continue
+				} else if char >= ' ' || char == '\t' {
 					lineBuf.WriteRune(char)
 				}
 			}
 		case <-errChan:
-			if lineBuf.Len() > 0 {
-				line := lineBuf.String()
-				line = strings.TrimRight(line, "\r")
-				if len(strings.TrimSpace(line)) > 0 {
-					fmt.Printf("%s[%s]%s %s\n", color, serviceName, resetColor, line)
-				}
-			}
+			flushLine()
 			return
 		case <-timeoutChan:
-			if lineBuf.Len() > 0 {
-				line := lineBuf.String()
-				line = strings.TrimRight(line, "\r")
-				if len(strings.TrimSpace(line)) > 0 {
-					fmt.Printf("%s[%s]%s %s\n", color, serviceName, resetColor, line)
-				}
-			}
+			flushLine()
 			return
 		case <-stopChan:
 			_ = ws.WriteMessage(websocket.CloseMessage, websocket.FormatCloseMessage(websocket.CloseNormalClosure, "stopping"))
@@ -777,19 +784,10 @@ func handleComposeUp(projectName string, composePath string, subArgs []string) {
 		os.Exit(0)
 	}()
 
-	colors := []string{
-		"\033[1;36m", // Cyan
-		"\033[1;35m", // Magenta
-		"\033[1;32m", // Green
-		"\033[1;33m", // Yellow
-		"\033[1;34m", // Blue
-		"\033[1;31m", // Red
-	}
-
 	var wg sync.WaitGroup
 	for i, s := range stackResp.Sessions {
 		wg.Add(1)
-		color := colors[i%len(colors)]
+		color := logColors[i%len(logColors)]
 		wsURL := fmt.Sprintf("%s/sessions/%s/console?token=%s", WSBaseURL, s.ID, cfg.Token)
 		go StreamLogs(s.ServiceName, color, wsURL, &wg, stopChan, true)
 	}
@@ -897,22 +895,13 @@ func handleComposeLogs(projectName string, subArgs []string) {
 			fmt.Println("\n\n⚡ Detaching log viewer... (remote services will continue running)")
 			close(stopChan)
 			os.Exit(0)
-		}()
-	}
-
-	colors := []string{
-		"\033[1;36m", // Cyan
-		"\033[1;35m", // Magenta
-		"\033[1;32m", // Green
-		"\033[1;33m", // Yellow
-		"\033[1;34m", // Blue
-		"\033[1;31m", // Red
-	}
+	}()
+}
 
 	var wg sync.WaitGroup
 	for i, s := range targetSessions {
 		wg.Add(1)
-		color := colors[i%len(colors)]
+		color := logColors[i%len(logColors)]
 		wsURL := fmt.Sprintf("%s/sessions/%s/console?token=%s", WSBaseURL, s.ID, cfg.Token)
 		go StreamLogs(s.ServiceName, color, wsURL, &wg, stopChan, follow)
 	}
