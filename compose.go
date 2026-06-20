@@ -750,9 +750,44 @@ func handleComposeUp(projectName string, composePath string, subArgs []string) {
 	}
 
 	fmt.Printf("[3/3] Establishing console/log multiplexer for stack: %s\n\n", stackResp.StackID)
+
+	// Poll for IPs — provisioning is async so the initial response may have empty vm_ipv6
+	allHaveIPs := func() bool {
+		for _, s := range stackResp.Sessions {
+			if s.VMIPv6 == "" {
+				return false
+			}
+		}
+		return true
+	}
+	if !allHaveIPs() {
+		fmt.Printf("  Waiting for VM IPs")
+		for attempt := 0; attempt < 30 && !allHaveIPs(); attempt++ {
+			time.Sleep(1 * time.Second)
+			for i, s := range stackResp.Sessions {
+				req, _ := http.NewRequest("GET", fmt.Sprintf("%s/v1/sessions/%s", APIBaseURL, s.ID), nil)
+				req.Header.Set("Authorization", "Bearer "+cfg.Token)
+				sessResp, err := client.Do(req)
+				if err != nil {
+					continue
+				}
+				var updated Session
+				if json.NewDecoder(sessResp.Body).Decode(&updated) == nil && updated.VMIPv6 != "" {
+					stackResp.Sessions[i].VMIPv6 = updated.VMIPv6
+				}
+				sessResp.Body.Close()
+			}
+			if !allHaveIPs() {
+				fmt.Print(".")
+			}
+		}
+		fmt.Println()
+	}
+	fmt.Println()
 	for _, s := range stackResp.Sessions {
 		fmt.Printf("  - Service: %-10s | Subnet IP: %-30s | ID: %s\n", s.ServiceName, s.VMIPv6, s.ID)
 	}
+
 	fmt.Printf("\nPress Ctrl+C to stop all services and terminate the stack.\n\n")
 
 	stopChan := make(chan struct{})
