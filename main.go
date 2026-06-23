@@ -1244,10 +1244,10 @@ func handleExec(sessionID string, cmdArgs []string) {
 	}
 
 	if s.StackID != "" {
-		err = termBridge.ConnectInteractiveSerial(wsURL, cfg.Token, s.ID)
-	} else {
-		err = termBridge.ConnectInteractive(wsURL, false, cfg.Token, s.ID, nil, execCmd)
+		wsURL = fmt.Sprintf("%s/sessions/%s/console?token=%s&console=ssh", WSBaseURL, s.ID, cfg.Token)
 	}
+
+	err = termBridge.ConnectInteractive(wsURL, false, cfg.Token, s.ID, nil, execCmd)
 	if err != nil {
 		fmt.Println(err)
 	}
