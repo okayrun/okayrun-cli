@@ -325,6 +325,7 @@ func handleComposeRun(composePath string, verbose bool) {
 	fmt.Printf("\nPress Ctrl+C to stop all services and terminate the stack.\n\n")
 
 	stopChan := make(chan struct{})
+	cleanupDone := make(chan struct{})
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
 
@@ -351,7 +352,7 @@ func handleComposeRun(composePath string, verbose bool) {
 		}
 		cleanupWg.Wait()
 		fmt.Println("✓ All services shut down. Goodbye!")
-		os.Exit(0)
+		close(cleanupDone)
 	}()
 
 	var wg sync.WaitGroup
@@ -363,7 +364,8 @@ func handleComposeRun(composePath string, verbose bool) {
 	}
 
 	wg.Wait()
-	fmt.Println("All log streams closed. Exiting.")
+	<-cleanupDone
+	os.Exit(0)
 }
 
 func StreamLogs(serviceName string, color string, wsURL string, wg *sync.WaitGroup, stopChan chan struct{}, follow bool) {
@@ -811,6 +813,7 @@ func handleComposeUp(projectName string, composePath string, subArgs []string) {
 	fmt.Printf("\nPress Ctrl+C to stop all services and terminate the stack.\n\n")
 
 	stopChan := make(chan struct{})
+	cleanupDone := make(chan struct{})
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
 
@@ -837,7 +840,7 @@ func handleComposeUp(projectName string, composePath string, subArgs []string) {
 		}
 		cleanupWg.Wait()
 		fmt.Println("✓ All services shut down. Goodbye!")
-		os.Exit(0)
+		close(cleanupDone)
 	}()
 
 	var wg sync.WaitGroup
@@ -849,7 +852,8 @@ func handleComposeUp(projectName string, composePath string, subArgs []string) {
 	}
 
 	wg.Wait()
-	fmt.Println("All log streams closed. Exiting.")
+	<-cleanupDone
+	os.Exit(0)
 }
 
 func handleComposeDown(projectName string, subArgs []string) {
