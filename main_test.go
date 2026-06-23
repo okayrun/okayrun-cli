@@ -9,12 +9,21 @@ import (
 )
 
 func TestParseRunArgs_NoFlag(t *testing.T) {
-	verbose, ports, image, cmdArgs := parseRunArgs([]string{"fedora"})
+	verbose, ports, memory, cpus, disk, image, cmdArgs := parseRunArgs([]string{"fedora"})
 	if verbose {
 		t.Errorf("expected verbose=false, got true")
 	}
 	if len(ports) != 0 {
 		t.Errorf("expected empty ports, got %v", ports)
+	}
+	if memory != "" {
+		t.Errorf("expected empty memory, got %v", memory)
+	}
+	if cpus != 0 {
+		t.Errorf("expected cpus=0, got %v", cpus)
+	}
+	if disk != "" {
+		t.Errorf("expected empty disk, got %v", disk)
 	}
 	if image != "fedora" {
 		t.Errorf("expected image=%q, got %q", "fedora", image)
@@ -25,7 +34,7 @@ func TestParseRunArgs_NoFlag(t *testing.T) {
 }
 
 func TestParseRunArgs_VerboseFlagFirst(t *testing.T) {
-	verbose, ports, image, cmdArgs := parseRunArgs([]string{"--verbose", "fedora"})
+	verbose, ports, _, _, _, image, cmdArgs := parseRunArgs([]string{"--verbose", "fedora"})
 	if !verbose {
 		t.Errorf("expected verbose=true, got false")
 	}
@@ -41,7 +50,7 @@ func TestParseRunArgs_VerboseFlagFirst(t *testing.T) {
 }
 
 func TestParseRunArgs_VerboseFlagLast(t *testing.T) {
-	verbose, ports, image, cmdArgs := parseRunArgs([]string{"fedora", "--verbose"})
+	verbose, ports, _, _, _, image, cmdArgs := parseRunArgs([]string{"fedora", "--verbose"})
 	if !verbose {
 		t.Errorf("expected verbose=true, got false")
 	}
@@ -57,7 +66,7 @@ func TestParseRunArgs_VerboseFlagLast(t *testing.T) {
 }
 
 func TestParseRunArgs_VerboseWithCommand(t *testing.T) {
-	verbose, ports, image, cmdArgs := parseRunArgs([]string{"--verbose", "fedora", "echo hi"})
+	verbose, ports, _, _, _, image, cmdArgs := parseRunArgs([]string{"--verbose", "fedora", "echo hi"})
 	if !verbose {
 		t.Errorf("expected verbose=true, got false")
 	}
@@ -86,7 +95,7 @@ func TestParseRunArgs_PublishFlags(t *testing.T) {
 	}
 
 	for _, tc := range tests {
-		_, ports, image, _ := parseRunArgs(tc.args)
+		_, ports, _, _, _, image, _ := parseRunArgs(tc.args)
 		if image != tc.expectedImage {
 			t.Errorf("for args %v: expected image %q, got %q", tc.args, tc.expectedImage, image)
 		}
