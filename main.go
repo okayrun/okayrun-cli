@@ -542,6 +542,7 @@ func handleSave(sessionID, name string) {
 
 type TerminalBridge interface {
 	ConnectInteractive(wsURL string, verbose bool, token, sessionID string, entrypoint, cmd []string) error
+	ConnectInteractiveSerial(wsURL string, token, sessionID string) error
 	ExecuteCommand(wsURL, commandStr string, token, sessionID string) error
 }
 
@@ -687,6 +688,68 @@ func (r *RawOSTerminalBridge) ConnectInteractive(wsURL string, verbose bool, tok
 			os.Exit(exitErr.ExitStatus())
 		}
 	}
+	return nil
+}
+
+func (r *RawOSTerminalBridge) ConnectInteractiveSerial(wsURL string, token, sessionID string) error {
+	dialer := websocket.Dialer{HandshakeTimeout: 5 * time.Second}
+	ws, resp, err := dialer.Dial(wsURL, nil)
+	if err != nil {
+		if resp != nil {
+			return fmt.Errorf("Error opening terminal socket bridge: websocket handshake failed (HTTP %d %s)", resp.StatusCode, resp.Status)
+		}
+		return fmt.Errorf("Error opening terminal socket bridge: %v", err)
+	}
+	defer ws.Close()
+
+	wsConn := &WSConn{conn: ws}
+
+	stdinFd := int(syscall.Stdin)
+	oldState, err := term.MakeRaw(stdinFd)
+	if err != nil {
+		return fmt.Errorf("Error configuring terminal to RAW mode: %v", err)
+	}
+	defer func() {
+		term.Restore(stdinFd, oldState)
+		fmt.Print("\033[0m\033[?25h\033[?1049l\033[r\033[H")
+	}()
+
+	done := make(chan struct{})
+	defer close(done)
+
+	// stdin -> WebSocket
+	go func() {
+		buf := make([]byte, 4096)
+		for {
+			n, err := os.Stdin.Read(buf)
+			if n > 0 {
+				_, _ = wsConn.Write(buf[:n])
+			}
+			if err != nil {
+				return
+			}
+		}
+	}()
+
+	// WebSocket -> stdout
+	closeChan := make(chan struct{})
+	go func() {
+		defer close(closeChan)
+		buf := make([]byte, 4096)
+		for {
+			n, err := wsConn.Read(buf)
+			if n > 0 {
+				_, _ = os.Stdout.Write(buf[:n])
+			}
+			if err != nil {
+				return
+			}
+		}
+	}()
+
+	// Block until connection closes
+	<-closeChan
+
 	return nil
 }
 
@@ -1180,7 +1243,11 @@ func handleExec(sessionID string, cmdArgs []string) {
 		execCmd = []string{"/bin/sh"}
 	}
 
-	err = termBridge.ConnectInteractive(wsURL, false, cfg.Token, s.ID, nil, execCmd)
+	if s.StackID != "" {
+		err = termBridge.ConnectInteractiveSerial(wsURL, cfg.Token, s.ID)
+	} else {
+		err = termBridge.ConnectInteractive(wsURL, false, cfg.Token, s.ID, nil, execCmd)
+	}
 	if err != nil {
 		fmt.Println(err)
 	}
