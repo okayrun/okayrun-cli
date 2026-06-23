@@ -791,7 +791,7 @@ func handleComposeUp(projectName string, composePath string, subArgs []string) {
 	}
 
 	// Save server-generated stack_id for subsequent commands (down, logs)
-	if err := saveStackIDToFile(projectName, stackResp.StackID); err != nil {
+	if err := saveStackIDToFile(sanitizeStackID(projectName), stackResp.StackID); err != nil {
 		fmt.Printf("Warning: failed to save stack ID to %s: %v\n", okayStackFile, err)
 	}
 
@@ -897,7 +897,7 @@ func handleComposeDown(projectName string, subArgs []string) {
 		return
 	}
 
-	stackID := getStackIDFromFile(projectName)
+	stackID := getStackIDFromFile(sanitizeStackID(projectName))
 	if stackID == "" {
 		// Fallback to local computation for backward compat with existing stacks
 		stackID = getStackID(projectName)
@@ -960,7 +960,7 @@ func handleComposeLogs(projectName string, subArgs []string) {
 		return
 	}
 
-	stackID := getStackIDFromFile(projectName)
+	stackID := getStackIDFromFile(sanitizeStackID(projectName))
 	if stackID == "" {
 		// Fallback to local computation for backward compat with existing stacks
 		stackID = getStackID(projectName)
