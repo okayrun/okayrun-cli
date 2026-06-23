@@ -79,11 +79,13 @@ func (d *DependsOnList) UnmarshalYAML(value *yaml.Node) error {
 
 type ComposeService struct {
 	Image       string        `yaml:"image"`
+	Hostname    string        `yaml:"hostname,omitempty"`
 	Ports       []string      `yaml:"ports"`
 	DependsOn   DependsOnList `yaml:"depends_on"`
 	Environment EnvList       `yaml:"environment"`
 	Volumes     []string      `yaml:"volumes"`
 	DiskSize    string        `yaml:"x-okay-disk,omitempty"`
+	Hypervisor  string        `yaml:"x-okay-hypervisor,omitempty"`
 }
 
 type ComposeFile struct {
@@ -97,10 +99,12 @@ type StackSpawnRequest struct {
 }
 
 type StackServicePayload struct {
-	Name     string   `json:"name"`
-	Image    string   `json:"image"`
-	DiskSize string   `json:"disk_size,omitempty"`
-	Ports    []string `json:"ports,omitempty"`
+	Name       string   `json:"name"`
+	Image      string   `json:"image"`
+	Hostname   string   `json:"hostname,omitempty"`
+	DiskSize   string   `json:"disk_size,omitempty"`
+	Ports      []string `json:"ports,omitempty"`
+	Hypervisor string   `json:"hypervisor,omitempty"`
 }
 
 func ParseComposeFile(path string) (*ComposeFile, error) {
@@ -266,11 +270,17 @@ func handleComposeRun(composePath string, verbose bool) {
 	var payload StackSpawnRequest
 	for name, svc := range comp.Services {
 		img := TranslateImageToDistro(svc.Image)
+		hostname := svc.Hostname
+		if hostname == "" {
+			hostname = name
+		}
 		payload.Services = append(payload.Services, StackServicePayload{
-			Name:     name,
-			Image:    img,
-			DiskSize: svc.DiskSize,
-			Ports:    svc.Ports,
+			Name:       name,
+			Image:      img,
+			Hostname:   hostname,
+			DiskSize:   svc.DiskSize,
+			Ports:      svc.Ports,
+			Hypervisor: svc.Hypervisor,
 		})
 	}
 
@@ -703,11 +713,17 @@ func handleComposeUp(projectName string, composePath string, subArgs []string) {
 	payload.StackID = stackID
 	for name, svc := range comp.Services {
 		img := TranslateImageToDistro(svc.Image)
+		hostname := svc.Hostname
+		if hostname == "" {
+			hostname = name
+		}
 		payload.Services = append(payload.Services, StackServicePayload{
-			Name:     name,
-			Image:    img,
-			DiskSize: svc.DiskSize,
-			Ports:    svc.Ports,
+			Name:       name,
+			Image:      img,
+			Hostname:   hostname,
+			DiskSize:   svc.DiskSize,
+			Ports:      svc.Ports,
+			Hypervisor: svc.Hypervisor,
 		})
 	}
 
