@@ -243,7 +243,7 @@ func handleVolumeMount(id, path string, rw bool) {
 	fmt.Printf("  ✓ Agent: %s:%d\n", mountRespData.AgentHost, mountRespData.AgentPort)
 
 	// Mount via WebDAV FUSE
-	agentURL := fmt.Sprintf("https://%s:%d", mountRespData.AgentHost, mountRespData.AgentPort)
+	agentURL := fmt.Sprintf("http://%s:%d", mountRespData.AgentHost, mountRespData.AgentPort)
 	if err := MountVolume(vol.ID, path, agentURL, mountRespData.Username, mountRespData.Password); err != nil {
 		fmt.Printf("  ✗ Failed to mount: %v\n", err)
 		return
