@@ -182,9 +182,15 @@ func (f *VolumeFS) Root() (fs.Node, error) {
 		return nil, fmt.Errorf("failed to attach to volume: %w", err)
 	}
 
+	// Walk to self to get a fresh FID (attach FID can't be opened directly)
+	_, walked, err := root.Walk(nil)
+	if err != nil {
+		return nil, fmt.Errorf("failed to walk root: %w", err)
+	}
+
 	return &VolumeNode{
 		p9Client: f.p9Client,
-		file:     root,
+		file:     walked,
 		path:     "/",
 	}, nil
 }
@@ -229,7 +235,6 @@ func (n *VolumeNode) Lookup(ctx context.Context, name string) (fs.Node, error) {
 
 // ReadDirAll returns all directory entries
 func (n *VolumeNode) ReadDirAll(ctx context.Context) ([]fuse.Dirent, error) {
-	// Open the directory first (p9 requires Open before Readdir)
 	if _, _, err := n.file.Open(p9.ReadOnly); err != nil {
 		return nil, fmt.Errorf("open dir failed: %w", err)
 	}
