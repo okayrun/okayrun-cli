@@ -5,7 +5,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"os"
+	"os/signal"
 	"strings"
+	"syscall"
 	"time"
 )
 
@@ -250,7 +253,18 @@ func handleVolumeMount(id, path string, rw bool) {
 	}
 
 	fmt.Printf("  ✓ FUSE mount established\n")
-	fmt.Printf("  ✓ Ready. Run 'okay volume unmount %s' when done.\n", path)
+	fmt.Printf("  ✓ Ready. Run 'okay volume unmount %s' when done.\n\n", path)
+
+	// Block until Ctrl+C or unmount
+	sigChan := make(chan os.Signal, 1)
+	signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
+
+	fmt.Println("Press Ctrl+C to unmount...")
+	<-sigChan
+
+	fmt.Println("\nUnmounting...")
+	UnmountVolume(vol.ID)
+	fmt.Println("Done.")
 }
 
 func handleVolumeUnmount(path string) {
