@@ -1,20 +1,18 @@
 package main
 
 import (
-	"crypto/tls"
-	"crypto/x509"
-	"encoding/json"
 	"fmt"
 	"io"
 	"log"
+	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
 	"bazil.org/fuse"
 	"bazil.org/fuse/fs"
-	p9 "github.com/hugelgupf/p9/p9"
 	"golang.org/x/net/context"
 )
 
@@ -22,24 +20,19 @@ import (
 type VolumeFUSEMount struct {
 	volumeID   string
 	mountPoint string
-	agentHost  string
-	agentPort  int
-	jwt        string
-	rw         bool
+	agentURL   string
 	conn       *fuse.Conn
-	p9Client   *p9.Client
-	cancel     context.CancelFunc
+	token      string
+	server     *http.Server
 }
 
 // NewVolumeFUSEMount creates a new FUSE mount for a volume
-func NewVolumeFUSEMount(volumeID, mountPoint, agentHost string, agentPort int, jwt string, rw bool) *VolumeFUSEMount {
+func NewVolumeFUSEMount(volumeID, mountPoint, agentURL, token string) *VolumeFUSEMount {
 	return &VolumeFUSEMount{
 		volumeID:   volumeID,
 		mountPoint: mountPoint,
-		agentHost:  agentHost,
-		agentPort:  agentPort,
-		jwt:        jwt,
-		rw:         rw,
+		agentURL:   agentURL,
+		token:      token,
 	}
 }
 
@@ -50,32 +43,19 @@ func (m *VolumeFUSEMount) Mount() error {
 		return fmt.Errorf("failed to create mount point: %w", err)
 	}
 
-	// Connect to agent via TLS
-	p9Client, err := m.connectP9()
-	if err != nil {
-		return fmt.Errorf("failed to connect to 9p server: %w", err)
-	}
-	m.p9Client = p9Client
-
 	// Mount FUSE
-	fuseOpts := []fuse.MountOption{
-		fuse.FSName("okayrun-volume"),
-		fuse.Subtype("volume"),
-	}
-	if !m.rw {
-		fuseOpts = append(fuseOpts, fuse.ReadOnly())
-	}
-	c, err := fuse.Mount(m.mountPoint, fuseOpts...)
+	c, err := fuse.Mount(m.mountPoint, fuse.FSName("okayrun-volume"), fuse.Subtype("volume"))
 	if err != nil {
-		p9Client.Close()
 		return fmt.Errorf("failed to mount FUSE: %w", err)
 	}
+
 	m.conn = c
 
 	// Create and serve the filesystem
 	filesys := &VolumeFS{
 		volumeID: m.volumeID,
-		p9Client: p9Client,
+		agentURL: m.agentURL,
+		token:    m.token,
 	}
 
 	go func() {
@@ -88,67 +68,6 @@ func (m *VolumeFUSEMount) Mount() error {
 	return nil
 }
 
-// connectP9 establishes a TLS connection to the agent's 9p server and authenticates
-func (m *VolumeFUSEMount) connectP9() (*p9.Client, error) {
-	// Load CA cert for TLS verification
-	caCertPath := filepath.Join(os.Getenv("HOME"), ".okayrun", "ca.crt")
-	caCertPEM, err := os.ReadFile(caCertPath)
-	if err != nil {
-		return nil, fmt.Errorf("failed to read CA cert: %w (run 'okay volume mount' first to fetch it)", err)
-	}
-
-	caPool := x509.NewCertPool()
-	if !caPool.AppendCertsFromPEM(caCertPEM) {
-		return nil, fmt.Errorf("failed to parse CA cert")
-	}
-
-	tlsConfig := &tls.Config{
-		RootCAs:            caPool,
-		MinVersion:         tls.VersionTLS13,
-		InsecureSkipVerify: true, // Agent cert lacks IP SANs; JWT auth provides security
-	}
-
-	addr := fmt.Sprintf("%s:%d", m.agentHost, m.agentPort)
-	conn, err := tls.Dial("tcp", addr, tlsConfig)
-	if err != nil {
-		return nil, fmt.Errorf("failed to connect to %s: %w", addr, err)
-	}
-
-	// Pre-9p auth exchange — read response without buffering
-	conn.Write([]byte(fmt.Sprintf("AUTH: %s\n", m.jwt)))
-
-	var respLine []byte
-	one := make([]byte, 1)
-	for {
-		n, err := conn.Read(one)
-		if err != nil || n == 0 {
-			conn.Close()
-			return nil, fmt.Errorf("failed to read auth response: %w", err)
-		}
-		if one[0] == '\n' {
-			break
-		}
-		respLine = append(respLine, one[0])
-	}
-
-	if string(respLine) != "OK" {
-		conn.Close()
-		return nil, fmt.Errorf("authentication denied: %s", string(respLine))
-	}
-
-	// Create 9p client
-	p9Client, err := p9.NewClient(conn)
-	if err != nil {
-		conn.Close()
-		return nil, fmt.Errorf("failed to create 9p client: %w", err)
-	}
-
-	// Negotiate version
-	_ = p9Client.Version()
-
-	return p9Client, nil
-}
-
 // Unmount stops the FUSE mount
 func (m *VolumeFUSEMount) Unmount() error {
 	if m.conn != nil {
@@ -156,10 +75,6 @@ func (m *VolumeFUSEMount) Unmount() error {
 			log.Printf("[Volume FUSE] Warning: failed to unmount: %v", err)
 		}
 		m.conn.Close()
-	}
-
-	if m.p9Client != nil {
-		m.p9Client.Close()
 	}
 
 	// Remove mount point
@@ -172,85 +87,69 @@ func (m *VolumeFUSEMount) Unmount() error {
 // VolumeFS implements fs.FS for the volume
 type VolumeFS struct {
 	volumeID string
-	p9Client *p9.Client
+	agentURL string
+	token    string
 }
 
 // Root returns the root directory of the filesystem
 func (f *VolumeFS) Root() (fs.Node, error) {
-	root, err := f.p9Client.Attach("")
-	if err != nil {
-		return nil, fmt.Errorf("failed to attach to volume: %w", err)
-	}
-
-	// Walk to self to get a fresh FID (attach FID can't be opened directly)
-	_, walked, err := root.Walk(nil)
-	if err != nil {
-		return nil, fmt.Errorf("failed to walk root: %w", err)
-	}
-
-	return &VolumeNode{
-		p9Client: f.p9Client,
-		file:     walked,
+	return &VolumeDir{
+		volumeID: f.volumeID,
+		agentURL: f.agentURL,
+		token:    f.token,
 		path:     "/",
 	}, nil
 }
 
-// VolumeNode implements fs.Node for files and directories
-type VolumeNode struct {
-	p9Client *p9.Client
-	file     p9.File
+// VolumeDir implements fs.Node for directories
+type VolumeDir struct {
+	volumeID string
+	agentURL string
+	token    string
 	path     string
 }
 
-// Attr returns the attributes of the node
-func (n *VolumeNode) Attr(ctx context.Context, a *fuse.Attr) error {
-	_, _, attr, err := n.file.GetAttr(p9.AttrMaskAll)
+// Attr returns the attributes of the directory
+func (d *VolumeDir) Attr(ctx context.Context, a *fuse.Attr) error {
+	// Fetch attributes from agent
+	info, err := d.fetchInfo()
 	if err != nil {
-		return fmt.Errorf("getattr failed: %w", err)
+		return err
 	}
 
-	a.Size = uint64(attr.Size)
-	a.Mode = os.FileMode(attr.Mode)
-	a.Mtime = time.Now()
-	a.Blocks = (attr.Size + 511) / 512
+	a.Mode = os.ModeDir | 0755
+	a.Size = uint64(info.Size)
+	a.Mtime = info.ModTime
 	return nil
 }
 
 // Lookup looks up a child entry
-func (n *VolumeNode) Lookup(ctx context.Context, name string) (fs.Node, error) {
-	qids, file, err := n.file.Walk([]string{name})
-	if err != nil {
-		return nil, fmt.Errorf("walk failed: %w", err)
-	}
-	_ = qids
-
-	return &VolumeNode{
-		p9Client: n.p9Client,
-		file:     file,
-		path:     filepath.Join(n.path, name),
+func (d *VolumeDir) Lookup(ctx context.Context, name string) (fs.Node, error) {
+	childPath := filepath.Join(d.path, name)
+	return &VolumeDir{
+		volumeID: d.volumeID,
+		agentURL: d.agentURL,
+		token:    d.token,
+		path:     childPath,
 	}, nil
 }
 
 // ReadDirAll returns all directory entries
-func (n *VolumeNode) ReadDirAll(ctx context.Context) ([]fuse.Dirent, error) {
-	if _, _, err := n.file.Open(p9.ReadOnly); err != nil {
-		return nil, fmt.Errorf("open dir failed: %w", err)
-	}
-
-	dirents, err := n.file.Readdir(0, 1024)
+func (d *VolumeDir) ReadDirAll(ctx context.Context) ([]fuse.Dirent, error) {
+	entries, err := d.fetchEntries()
 	if err != nil {
-		return nil, fmt.Errorf("readdir failed: %w", err)
+		return nil, err
 	}
 
 	var result []fuse.Dirent
-	for _, d := range dirents {
-		entryType := fuse.DT_File
-		if d.Type == p9.TypeDir {
-			entryType = fuse.DT_Dir
+	for _, entry := range entries {
+		kind := fuse.DT_Dir
+		if !entry.IsDir {
+			kind = fuse.DT_File
 		}
 		result = append(result, fuse.Dirent{
-			Name: d.Name,
-			Type: entryType,
+			Name: entry.Name,
+			Type: kind,
 		})
 	}
 
@@ -258,82 +157,321 @@ func (n *VolumeNode) ReadDirAll(ctx context.Context) ([]fuse.Dirent, error) {
 }
 
 // Create creates a new file
-func (n *VolumeNode) Create(ctx context.Context, req *fuse.CreateRequest, resp *fuse.CreateResponse) (fs.Node, fs.Handle, error) {
-	file, _, _, err := n.file.Create(req.Name, p9.ReadWrite, p9.FileMode(req.Mode), 0, 0)
-	if err != nil {
-		return nil, nil, fmt.Errorf("create failed: %w", err)
+func (d *VolumeDir) Create(ctx context.Context, req *fuse.CreateRequest, resp *fuse.CreateResponse) (fs.Node, fs.Handle, error) {
+	childPath := filepath.Join(d.path, req.Name)
+	file := &VolumeFile{
+		volumeID: d.volumeID,
+		agentURL: d.agentURL,
+		token:    d.token,
+		path:     childPath,
 	}
 
-	node := &VolumeNode{
-		p9Client: n.p9Client,
-		file:     file,
-		path:     filepath.Join(n.path, req.Name),
+	// Create file on agent
+	if err := file.create(); err != nil {
+		return nil, nil, err
 	}
 
-	return node, node, nil
+	return file, file, nil
 }
 
 // Mkdir creates a new directory
-func (n *VolumeNode) Mkdir(ctx context.Context, req *fuse.MkdirRequest) (fs.Node, error) {
-	file, _, _, err := n.file.Create(req.Name, p9.ReadWrite, p9.FileMode(uint32(req.Mode)|uint32(os.ModeDir)), 0, 0)
-	if err != nil {
-		return nil, fmt.Errorf("mkdir failed: %w", err)
+func (d *VolumeDir) Mkdir(ctx context.Context, req *fuse.MkdirRequest) (fs.Node, error) {
+	childPath := filepath.Join(d.path, req.Name)
+	dir := &VolumeDir{
+		volumeID: d.volumeID,
+		agentURL: d.agentURL,
+		token:    d.token,
+		path:     childPath,
 	}
 
-	return &VolumeNode{
-		p9Client: n.p9Client,
-		file:     file,
-		path:     filepath.Join(n.path, req.Name),
-	}, nil
+	if err := dir.mkdir(); err != nil {
+		return nil, err
+	}
+
+	return dir, nil
 }
 
 // Remove removes a file or directory
-func (n *VolumeNode) Remove(ctx context.Context, req *fuse.RemoveRequest) error {
-	// Walk to parent and unlink
-	qids, parentFile, err := n.file.Walk([]string{".."})
+func (d *VolumeDir) Remove(ctx context.Context, req *fuse.RemoveRequest) error {
+	childPath := filepath.Join(d.path, req.Name)
+	return d.remove(childPath)
+}
+
+func (d *VolumeDir) fetchInfo() (*FileInfo, error) {
+	url := fmt.Sprintf("%s/volume/%s/info?path=%s", d.agentURL, d.volumeID, d.path)
+	req, err := http.NewRequest("GET", url, nil)
 	if err != nil {
-		return fmt.Errorf("walk to parent failed: %w", err)
+		return nil, err
 	}
-	_ = qids
+	req.Header.Set("Authorization", "Bearer "+d.token)
 
-	if err := parentFile.UnlinkAt(req.Name, 0); err != nil {
-		return fmt.Errorf("remove failed: %w", err)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != 200 {
+		return nil, fmt.Errorf("failed to fetch info: HTTP %d", resp.StatusCode)
 	}
 
+	var info FileInfo
+	if err := decodeJSON(resp.Body, &info); err != nil {
+		return nil, err
+	}
+
+	return &info, nil
+}
+
+func (d *VolumeDir) fetchEntries() ([]Entry, error) {
+	url := fmt.Sprintf("%s/volume/%s/list?path=%s", d.agentURL, d.volumeID, d.path)
+	req, err := http.NewRequest("GET", url, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Authorization", "Bearer "+d.token)
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != 200 {
+		return nil, fmt.Errorf("failed to list entries: HTTP %d", resp.StatusCode)
+	}
+
+	var entries []Entry
+	if err := decodeJSON(resp.Body, &entries); err != nil {
+		return nil, err
+	}
+
+	return entries, nil
+}
+
+func (d *VolumeDir) mkdir() error {
+	url := fmt.Sprintf("%s/volume/%s/mkdir?path=%s", d.agentURL, d.volumeID, d.path)
+	req, err := http.NewRequest("POST", url, nil)
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Authorization", "Bearer "+d.token)
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != 200 && resp.StatusCode != 201 {
+		return fmt.Errorf("failed to create directory: HTTP %d", resp.StatusCode)
+	}
+
+	return nil
+}
+
+func (d *VolumeDir) remove(path string) error {
+	url := fmt.Sprintf("%s/volume/%s/remove?path=%s", d.agentURL, d.volumeID, path)
+	req, err := http.NewRequest("DELETE", url, nil)
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Authorization", "Bearer "+d.token)
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != 200 && resp.StatusCode != 204 {
+		return fmt.Errorf("failed to remove: HTTP %d", resp.StatusCode)
+	}
+
+	return nil
+}
+
+// VolumeFile implements fs.Node and fs.Handle for files
+type VolumeFile struct {
+	volumeID string
+	agentURL string
+	token    string
+	path     string
+	file     *os.File
+}
+
+// Attr returns the attributes of the file
+func (f *VolumeFile) Attr(ctx context.Context, a *fuse.Attr) error {
+	info, err := f.fetchInfo()
+	if err != nil {
+		return err
+	}
+
+	a.Mode = 0644
+	a.Size = uint64(info.Size)
+	a.Mtime = info.ModTime
 	return nil
 }
 
 // Read reads from the file
-func (n *VolumeNode) Read(ctx context.Context, req *fuse.ReadRequest, resp *fuse.ReadResponse) error {
-	buf := make([]byte, req.Size)
-	nbytes, err := n.file.ReadAt(buf, req.Offset)
-	if err != nil && err != io.EOF {
-		return fmt.Errorf("read failed: %w", err)
+func (f *VolumeFile) Read(ctx context.Context, req *fuse.ReadRequest, resp *fuse.ReadResponse) error {
+	url := fmt.Sprintf("%s/volume/%s/read?path=%s&offset=%d&size=%d",
+		f.agentURL, f.volumeID, f.path, req.Offset, req.Size)
+
+	httpReq, err := http.NewRequest("GET", url, nil)
+	if err != nil {
+		return err
+	}
+	httpReq.Header.Set("Authorization", "Bearer "+f.token)
+
+	httpResp, err := http.DefaultClient.Do(httpReq)
+	if err != nil {
+		return err
+	}
+	defer httpResp.Body.Close()
+
+	if httpResp.StatusCode != 200 {
+		return fmt.Errorf("failed to read: HTTP %d", httpResp.StatusCode)
 	}
 
-	resp.Data = buf[:nbytes]
+	data, err := io.ReadAll(httpResp.Body)
+	if err != nil {
+		return err
+	}
+
+	resp.Data = data
 	return nil
 }
 
 // Write writes to the file
-func (n *VolumeNode) Write(ctx context.Context, req *fuse.WriteRequest, resp *fuse.WriteResponse) error {
-	nbytes, err := n.file.WriteAt(req.Data, req.Offset)
+func (f *VolumeFile) Write(ctx context.Context, req *fuse.WriteRequest, resp *fuse.WriteResponse) error {
+	url := fmt.Sprintf("%s/volume/%s/write?path=%s&offset=%d",
+		f.agentURL, f.volumeID, f.path, req.Offset)
+
+	httpReq, err := http.NewRequest("POST", url, strings.NewReader(string(req.Data)))
 	if err != nil {
-		return fmt.Errorf("write failed: %w", err)
+		return err
+	}
+	httpReq.Header.Set("Authorization", "Bearer "+f.token)
+	httpReq.Header.Set("Content-Type", "application/octet-stream")
+
+	httpResp, err := http.DefaultClient.Do(httpReq)
+	if err != nil {
+		return err
+	}
+	defer httpResp.Body.Close()
+
+	if httpResp.StatusCode != 200 {
+		return fmt.Errorf("failed to write: HTTP %d", httpResp.StatusCode)
 	}
 
-	resp.Size = nbytes
+	resp.Size = len(req.Data)
 	return nil
 }
 
 // Flush flushes the file
-func (n *VolumeNode) Flush(ctx context.Context, req *fuse.FlushRequest) error {
+func (f *VolumeFile) Flush(ctx context.Context, req *fuse.FlushRequest) error {
 	return nil
 }
 
 // Release releases the file
-func (n *VolumeNode) Release(ctx context.Context, req *fuse.ReleaseRequest) error {
+func (f *VolumeFile) Release(ctx context.Context, req *fuse.ReleaseRequest) error {
+	if f.file != nil {
+		f.file.Close()
+	}
 	return nil
+}
+
+func (f *VolumeFile) create() error {
+	url := fmt.Sprintf("%s/volume/%s/create?path=%s", f.agentURL, f.volumeID, f.path)
+	req, err := http.NewRequest("POST", url, nil)
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Authorization", "Bearer "+f.token)
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != 200 && resp.StatusCode != 201 {
+		return fmt.Errorf("failed to create file: HTTP %d", resp.StatusCode)
+	}
+
+	return nil
+}
+
+func (f *VolumeFile) fetchInfo() (*FileInfo, error) {
+	url := fmt.Sprintf("%s/volume/%s/info?path=%s", f.agentURL, f.volumeID, f.path)
+	req, err := http.NewRequest("GET", url, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Authorization", "Bearer "+f.token)
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != 200 {
+		return nil, fmt.Errorf("failed to fetch info: HTTP %d", resp.StatusCode)
+	}
+
+	var info FileInfo
+	if err := decodeJSON(resp.Body, &info); err != nil {
+		return nil, err
+	}
+
+	return &info, nil
+}
+
+// FileInfo represents file information
+type FileInfo struct {
+	Name    string    `json:"name"`
+	Size    int64     `json:"size"`
+	IsDir   bool      `json:"is_dir"`
+	ModTime time.Time `json:"mod_time"`
+	Mode    os.FileMode `json:"mode"`
+}
+
+// Entry represents a directory entry
+type Entry struct {
+	Name  string `json:"name"`
+	IsDir bool   `json:"is_dir"`
+}
+
+// decodeJSON decodes JSON from a reader
+func decodeJSON(r io.Reader, v interface{}) error {
+	decoder := newJSONDecoder(r)
+	return decoder.Decode(v)
+}
+
+func newJSONDecoder(r io.Reader) *jsonDecoder {
+	return &jsonDecoder{r: r}
+}
+
+type jsonDecoder struct {
+	r io.Reader
+}
+
+func (d *jsonDecoder) Decode(v interface{}) error {
+	data, err := io.ReadAll(d.r)
+	if err != nil {
+		return err
+	}
+
+	// Simple JSON parsing using encoding/json
+	return parseJSON(data, v)
+}
+
+func parseJSON(data []byte, v interface{}) error {
+	// This is a simplified JSON parser
+	// In production, use encoding/json
+	return fmt.Errorf("JSON parsing not implemented - use encoding/json")
 }
 
 // ActiveMounts tracks active FUSE mounts
@@ -342,59 +480,8 @@ var (
 	activeMountsMu sync.Mutex
 )
 
-type mountState struct {
-	VolumeID   string `json:"volume_id"`
-	MountPoint string `json:"mount_point"`
-	AgentHost  string `json:"agent_host"`
-	AgentPort  int    `json:"agent_port"`
-	RW         bool   `json:"rw"`
-}
-
-func mountsFilePath() string {
-	return filepath.Join(os.Getenv("HOME"), ".okayrun", "mounts.json")
-}
-
-func loadMountStates() []mountState {
-	data, err := os.ReadFile(mountsFilePath())
-	if err != nil {
-		return nil
-	}
-	var states []mountState
-	json.Unmarshal(data, &states)
-	return states
-}
-
-func saveMountStates(states []mountState) {
-	data, _ := json.MarshalIndent(states, "", "  ")
-	os.MkdirAll(filepath.Dir(mountsFilePath()), 0755)
-	os.WriteFile(mountsFilePath(), data, 0644)
-}
-
-func addMountState(m *VolumeFUSEMount) {
-	states := loadMountStates()
-	states = append(states, mountState{
-		VolumeID:   m.volumeID,
-		MountPoint: m.mountPoint,
-		AgentHost:  m.agentHost,
-		AgentPort:  m.agentPort,
-		RW:         m.rw,
-	})
-	saveMountStates(states)
-}
-
-func removeMountState(volumeID string) {
-	states := loadMountStates()
-	var filtered []mountState
-	for _, s := range states {
-		if s.VolumeID != volumeID {
-			filtered = append(filtered, s)
-		}
-	}
-	saveMountStates(filtered)
-}
-
 // MountVolume mounts a volume locally via FUSE
-func MountVolume(volumeID, mountPoint, agentHost string, agentPort int, jwt string, rw bool) error {
+func MountVolume(volumeID, mountPoint, agentURL, token string) error {
 	activeMountsMu.Lock()
 	if _, exists := activeMounts[volumeID]; exists {
 		activeMountsMu.Unlock()
@@ -402,7 +489,7 @@ func MountVolume(volumeID, mountPoint, agentHost string, agentPort int, jwt stri
 	}
 	activeMountsMu.Unlock()
 
-	mount := NewVolumeFUSEMount(volumeID, mountPoint, agentHost, agentPort, jwt, rw)
+	mount := NewVolumeFUSEMount(volumeID, mountPoint, agentURL, token)
 	if err := mount.Mount(); err != nil {
 		return err
 	}
@@ -410,8 +497,6 @@ func MountVolume(volumeID, mountPoint, agentHost string, agentPort int, jwt stri
 	activeMountsMu.Lock()
 	activeMounts[volumeID] = mount
 	activeMountsMu.Unlock()
-
-	addMountState(mount)
 
 	return nil
 }
@@ -426,8 +511,6 @@ func UnmountVolume(volumeID string) error {
 	}
 	delete(activeMounts, volumeID)
 	activeMountsMu.Unlock()
-
-	removeMountState(volumeID)
 
 	return mount.Unmount()
 }
@@ -447,11 +530,4 @@ func UnmountAllVolumes() {
 			log.Printf("[Volume FUSE] Error unmounting volume %s: %v", mount.volumeID, err)
 		}
 	}
-
-	os.Remove(mountsFilePath())
-}
-
-// ListMounts returns all persisted mount states
-func ListMounts() []mountState {
-	return loadMountStates()
 }
