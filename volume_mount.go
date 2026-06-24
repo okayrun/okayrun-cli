@@ -229,6 +229,11 @@ func (n *VolumeNode) Lookup(ctx context.Context, name string) (fs.Node, error) {
 
 // ReadDirAll returns all directory entries
 func (n *VolumeNode) ReadDirAll(ctx context.Context) ([]fuse.Dirent, error) {
+	// Open the directory first (p9 requires Open before Readdir)
+	if _, _, err := n.file.Open(p9.ReadOnly); err != nil {
+		return nil, fmt.Errorf("open dir failed: %w", err)
+	}
+
 	dirents, err := n.file.Readdir(0, 1024)
 	if err != nil {
 		return nil, fmt.Errorf("readdir failed: %w", err)
