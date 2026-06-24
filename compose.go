@@ -111,6 +111,7 @@ type StackServicePayload struct {
 	Environment []string          `json:"environment,omitempty"`
 	Restart     string            `json:"restart,omitempty"`
 	Volumes     []ComposeVolume   `json:"volumes,omitempty"`
+	DependsOn   []string          `json:"depends_on,omitempty"`
 }
 
 type ComposeVolume struct {
@@ -843,6 +844,12 @@ func handleComposeUp(projectName string, composePath string, subArgs []string) {
 			}
 		}
 
+		// Convert DependsOn from interface{} slice to string slice
+		var dependsOn []string
+		for _, dep := range svc.DependsOn {
+			dependsOn = append(dependsOn, string(dep))
+		}
+
 		payload.Services = append(payload.Services, StackServicePayload{
 			Name:        name,
 			Image:       img,
@@ -854,8 +861,17 @@ func handleComposeUp(projectName string, composePath string, subArgs []string) {
 			Environment: svc.Environment,
 			Restart:     svc.Restart,
 			Volumes:     volumes,
+			DependsOn:   dependsOn,
 		})
 	}
+
+	// Sort services by dependency order
+	sortedServices, err := topologicalSort(payload.Services)
+	if err != nil {
+		fmt.Printf("Error: %v\n", err)
+		return
+	}
+	payload.Services = sortedServices
 
 	body, err := json.Marshal(payload)
 	if err != nil {
@@ -1095,4 +1111,67 @@ func handleComposeLogs(projectName string, subArgs []string) {
 	}
 
 	wg.Wait()
+}
+
+// topologicalSort sorts services by their depends_on dependencies.
+// Returns services in dependency order (dependencies first).
+// Returns error if cycle is detected.
+func topologicalSort(services []StackServicePayload) ([]StackServicePayload, error) {
+	// Build adjacency list and in-degree map
+	inDegree := make(map[string]int)
+	dependents := make(map[string][]string) // dependency -> list of services that depend on it
+	
+	for _, svc := range services {
+		if _, exists := inDegree[svc.Name]; !exists {
+			inDegree[svc.Name] = 0
+		}
+		for _, dep := range svc.DependsOn {
+			dependents[dep] = append(dependents[dep], svc.Name)
+			inDegree[svc.Name]++
+		}
+	}
+
+	// Kahn's algorithm
+	var result []StackServicePayload
+	queue := make([]string, 0)
+	
+	// Start with services that have no dependencies
+	for _, svc := range services {
+		if inDegree[svc.Name] == 0 {
+			queue = append(queue, svc.Name)
+		}
+	}
+
+	serviceMap := make(map[string]StackServicePayload)
+	for _, svc := range services {
+		serviceMap[svc.Name] = svc
+	}
+
+	for len(queue) > 0 {
+		// Sort queue for deterministic output
+		for i := 0; i < len(queue); i++ {
+			for j := i + 1; j < len(queue); j++ {
+				if queue[i] > queue[j] {
+					queue[i], queue[j] = queue[j], queue[i]
+				}
+			}
+		}
+		
+		name := queue[0]
+		queue = queue[1:]
+		result = append(result, serviceMap[name])
+
+		for _, dependent := range dependents[name] {
+			inDegree[dependent]--
+			if inDegree[dependent] == 0 {
+				queue = append(queue, dependent)
+			}
+		}
+	}
+
+	if len(result) != len(services) {
+		return nil, fmt.Errorf("dependency cycle detected in services")
+	}
+
+	return result, nil
 }
