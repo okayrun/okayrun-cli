@@ -80,10 +80,12 @@ func (d *DependsOnList) UnmarshalYAML(value *yaml.Node) error {
 type ComposeService struct {
 	Image       string        `yaml:"image"`
 	Hostname    string        `yaml:"hostname,omitempty"`
+	Command     string        `yaml:"command,omitempty"`
 	Ports       []string      `yaml:"ports"`
 	DependsOn   DependsOnList `yaml:"depends_on"`
 	Environment EnvList       `yaml:"environment"`
 	Volumes     []string      `yaml:"volumes"`
+	Restart     string        `yaml:"restart,omitempty"`
 	DiskSize    string        `yaml:"x-okay-disk,omitempty"`
 	Hypervisor  string        `yaml:"x-okay-hypervisor,omitempty"`
 }
@@ -99,12 +101,21 @@ type StackSpawnRequest struct {
 }
 
 type StackServicePayload struct {
-	Name       string   `json:"name"`
-	Image      string   `json:"image"`
-	Hostname   string   `json:"hostname,omitempty"`
-	DiskSize   string   `json:"disk_size,omitempty"`
-	Ports      []string `json:"ports,omitempty"`
-	Hypervisor string   `json:"hypervisor,omitempty"`
+	Name        string            `json:"name"`
+	Image       string            `json:"image"`
+	Hostname    string            `json:"hostname,omitempty"`
+	Command     string            `json:"command,omitempty"`
+	DiskSize    string            `json:"disk_size,omitempty"`
+	Ports       []string          `json:"ports,omitempty"`
+	Hypervisor  string            `json:"hypervisor,omitempty"`
+	Environment []string          `json:"environment,omitempty"`
+	Restart     string            `json:"restart,omitempty"`
+	Volumes     []ComposeVolume   `json:"volumes,omitempty"`
+}
+
+type ComposeVolume struct {
+	VolumeID   string `json:"volume_id"`
+	MountPoint string `json:"mount_point"`
 }
 
 func ParseComposeFile(path string) (*ComposeFile, error) {
@@ -679,7 +690,7 @@ func handleComposeUp(projectName string, composePath string, subArgs []string) {
 		return
 	}
 
-	fmt.Printf("[1/3] Checking account balance and credentials...\n")
+	fmt.Printf("[1/5] Checking account balance and credentials...\n")
 	profileReq, _ := http.NewRequest("GET", APIBaseURL+"/v1/users/me", nil)
 	profileReq.Header.Set("Authorization", "Bearer "+cfg.Token)
 	client := &http.Client{Timeout: 5 * time.Second}
@@ -707,10 +718,106 @@ func handleComposeUp(projectName string, composePath string, subArgs []string) {
 	}
 
 	if !hasIPv6() {
-		fmt.Println("[1/3] Warning: No IPv6 detected on this system. okayrun.net domains are IPv6-only and may not be accessible from your connection. SSH via CLI will still work.")
+		fmt.Println("[1/5] Warning: No IPv6 detected on this system. okayrun.net domains are IPv6-only and may not be accessible from your connection. SSH via CLI will still work.")
 	}
 
-	fmt.Printf("[2/3] Translating and spawning multi-VM orchestrator stack...\n")
+	// Resolve volumes
+	fmt.Printf("[2/5] Resolving volumes...\n")
+	volumeMap := make(map[string]string) // volume_name -> volume_id
+	for name, svc := range comp.Services {
+		for _, vol := range svc.Volumes {
+			parts := strings.SplitN(vol, ":", 2)
+			if len(parts) != 2 {
+				fmt.Printf("  \033[31m✗ Invalid volume format: %s (expected name:mountpoint)\033[0m\n", vol)
+				return
+			}
+			source := parts[0]
+			mountPoint := parts[1]
+
+			// Reject bind mounts (source contains . or /)
+			if strings.HasPrefix(source, ".") || strings.HasPrefix(source, "/") {
+				fmt.Printf("  \033[31m✗ Bind mount detected: %s\033[0m\n", vol)
+				fmt.Printf("    Bind mounts are not supported. Use a named volume instead:\n")
+				fmt.Printf("      %s_data:%s\n\n", name, mountPoint)
+				return
+			}
+
+			// Skip if already resolved
+			if _, exists := volumeMap[source]; exists {
+				continue
+			}
+
+			// Check if volume exists
+			checkReq, _ := http.NewRequest("GET", APIBaseURL+"/v1/volumes", nil)
+			checkReq.Header.Set("Authorization", "Bearer "+cfg.Token)
+			checkResp, err := client.Do(checkReq)
+			if err != nil {
+				fmt.Printf("  \033[31m✗ Error checking volumes: %v\033[0m\n", err)
+				return
+			}
+			var volList struct {
+				Volumes []struct {
+					ID   string `json:"id"`
+					Name string `json:"name"`
+				} `json:"volumes"`
+			}
+			_ = json.NewDecoder(checkResp.Body).Decode(&volList)
+			checkResp.Body.Close()
+
+			found := false
+			for _, v := range volList.Volumes {
+				if v.Name == source {
+					volumeMap[source] = v.ID
+					fmt.Printf("  ✓ Volume %s already exists (%s)\n", source, v.ID)
+					found = true
+					break
+				}
+			}
+
+			if !found {
+				// Create volume
+				fmt.Printf("  ⚠ Volume '%s' not found. Create it? [Y/n] ", source)
+				var answer string
+				fmt.Scanln(&answer)
+				if answer != "" && strings.ToLower(answer) != "y" && strings.ToLower(answer) != "yes" {
+					fmt.Println("  Aborted.")
+					return
+				}
+
+				createBody, _ := json.Marshal(map[string]string{
+					"name":     source,
+					"size":     "1G",
+					"stack_id": stackID,
+				})
+				createReq, _ := http.NewRequest("POST", APIBaseURL+"/v1/volumes", bytes.NewBuffer(createBody))
+				createReq.Header.Set("Authorization", "Bearer "+cfg.Token)
+				createReq.Header.Set("Content-Type", "application/json")
+				createResp, err := client.Do(createReq)
+				if err != nil {
+					fmt.Printf("  \033[31m✗ Error creating volume: %v\033[0m\n", err)
+					return
+				}
+				var createdVol struct {
+					ID     string  `json:"id"`
+					Name   string  `json:"name"`
+					SizeGB float64 `json:"size_gb"`
+				}
+				if createResp.StatusCode == http.StatusCreated {
+					_ = json.NewDecoder(createResp.Body).Decode(&createdVol)
+					volumeMap[source] = createdVol.ID
+					fmt.Printf("  ✓ Created %s (%s, %.1fG)\n", createdVol.ID, createdVol.Name, createdVol.SizeGB)
+				} else {
+					var errData map[string]string
+					_ = json.NewDecoder(createResp.Body).Decode(&errData)
+					fmt.Printf("  \033[31m✗ Failed to create volume: %s\033[0m\n", errData["error"])
+					return
+				}
+				createResp.Body.Close()
+			}
+		}
+	}
+
+	fmt.Printf("[3/5] Translating and spawning multi-VM orchestrator stack...\n")
 	var payload StackSpawnRequest
 	payload.StackID = stackID
 	for name, svc := range comp.Services {
@@ -719,13 +826,34 @@ func handleComposeUp(projectName string, composePath string, subArgs []string) {
 		if hostname == "" {
 			hostname = name
 		}
+
+		// Build volumes list
+		var volumes []ComposeVolume
+		for _, vol := range svc.Volumes {
+			parts := strings.SplitN(vol, ":", 2)
+			if len(parts) == 2 {
+				source := parts[0]
+				mountPoint := parts[1]
+				if volID, ok := volumeMap[source]; ok {
+					volumes = append(volumes, ComposeVolume{
+						VolumeID:   volID,
+						MountPoint: mountPoint,
+					})
+				}
+			}
+		}
+
 		payload.Services = append(payload.Services, StackServicePayload{
-			Name:       name,
-			Image:      img,
-			Hostname:   hostname,
-			DiskSize:   svc.DiskSize,
-			Ports:      svc.Ports,
-			Hypervisor: svc.Hypervisor,
+			Name:        name,
+			Image:       img,
+			Hostname:    hostname,
+			Command:     svc.Command,
+			DiskSize:    svc.DiskSize,
+			Ports:       svc.Ports,
+			Hypervisor:  svc.Hypervisor,
+			Environment: svc.Environment,
+			Restart:     svc.Restart,
+			Volumes:     volumes,
 		})
 	}
 
@@ -771,7 +899,7 @@ func handleComposeUp(projectName string, composePath string, subArgs []string) {
 		return
 	}
 
-	fmt.Printf("[3/3] Establishing console/log multiplexer for stack: %s\n\n", stackResp.StackID)
+	fmt.Printf("[4/5] Establishing console/log multiplexer for stack: %s\n\n", stackResp.StackID)
 
 	// Poll for IPs — provisioning is async so the initial response may have empty vm_ipv6
 	allHaveIPs := func() bool {
