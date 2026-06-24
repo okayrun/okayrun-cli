@@ -180,6 +180,12 @@ func main() {
 			return
 		}
 		handleRMI(os.Args[2])
+	case "volume":
+		if len(os.Args) < 3 {
+			printVolumeUsage()
+			return
+		}
+		handleVolume(os.Args[2:])
 	default:
 		fmt.Printf("Unknown command: %s\n", os.Args[1])
 		printUsage()
