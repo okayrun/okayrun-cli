@@ -162,14 +162,19 @@ func (d *davDir) Attr(ctx context.Context, a *fuse.Attr) error {
 func (d *davDir) Lookup(ctx context.Context, name string) (fs.Node, error) {
 	childPath := d.path + name
 
-	// Try directory first (with trailing slash)
+	// Try as directory (trailing slash)
 	resp, err := d.client.do("PROPFIND", childPath+"/", nil, map[string]string{
 		"Depth": "0",
 	})
 	if err == nil {
+		body, _ := io.ReadAll(resp.Body)
 		resp.Body.Close()
 		if resp.StatusCode == 207 || resp.StatusCode == 200 {
-			return &davDir{client: d.client, path: childPath + "/"}, nil
+			// Check if it's actually a directory by looking for <d:collection/>
+			if strings.Contains(string(body), "<d:collection") || strings.Contains(string(body), "<collection") {
+				return &davDir{client: d.client, path: childPath + "/"}, nil
+			}
+			// Not a directory, try as file
 		}
 	}
 
@@ -369,19 +374,18 @@ func (f *davFile) Read(ctx context.Context, req *fuse.ReadRequest, resp *fuse.Re
 }
 
 func (f *davFile) Write(ctx context.Context, req *fuse.WriteRequest, resp *fuse.WriteResponse) error {
-	// For WebDAV, we need to PUT the full content
-	// Read existing content first if offset > 0
+	// For WebDAV, PUT replaces the entire file content
+	// Read existing content first, then merge with new data
 	var existing []byte
-	if req.Offset > 0 {
-		httpResp, err := f.client.do("GET", f.path, nil, nil)
-		if err == nil {
-			existing, _ = io.ReadAll(httpResp.Body)
-			httpResp.Body.Close()
-		}
+
+	httpResp, err := f.client.do("GET", f.path, nil, nil)
+	if err == nil {
+		existing, _ = io.ReadAll(httpResp.Body)
+		httpResp.Body.Close()
 	}
 
-	// Build full content
-	full := make([]byte, req.Offset+int64(len(req.Data)))
+	// Build full content: existing + new data at offset
+	full := make([]byte, int(req.Offset)+len(req.Data))
 	copy(full, existing)
 	copy(full[req.Offset:], req.Data)
 
