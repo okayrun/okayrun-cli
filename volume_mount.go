@@ -43,7 +43,7 @@ func (m *VolumeFUSEMount) Mount() error {
 		return fmt.Errorf("failed to create mount point: %w", err)
 	}
 
-	c, err := fuse.Mount(m.mountPoint, fuse.FSName("okayrun-volume"), fuse.Subtype("volume"), fuse.AllowOther())
+	c, err := fuse.Mount(m.mountPoint, fuse.FSName("okayrun-volume"), fuse.Subtype("volume"))
 	if err != nil {
 		return fmt.Errorf("failed to mount FUSE: %w", err)
 	}
