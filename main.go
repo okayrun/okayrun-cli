@@ -278,6 +278,7 @@ Commands:
   save <id> <name>   Save a running microVM session's active disk as a custom image snapshot
   images             List your base and custom virtual machine images
   rmi <name>         Remove a custom image snapshot
+  volume             Manage persistent volumes (list|create|mount|unmount|inspect|delete|prune)
   help               Show this manual page
 
 Resource Flags (for 'run'):
