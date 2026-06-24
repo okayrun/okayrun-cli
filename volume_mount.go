@@ -56,6 +56,11 @@ func (m *VolumeFUSEMount) Mount() error {
 	}
 
 	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				log.Printf("[Volume FUSE] PANIC: %v", r)
+			}
+		}()
 		if err := fs.Serve(c, filesys); err != nil {
 			log.Printf("[Volume FUSE] Error serving filesystem: %v", err)
 		}
@@ -88,6 +93,7 @@ type webdavClient struct {
 
 func (c *webdavClient) do(method, path string, body io.Reader, headers map[string]string) (*http.Response, error) {
 	u := c.baseURL + path
+	log.Printf("[Volume FUSE] HTTP %s %s", method, u)
 	req, err := http.NewRequest(method, u, body)
 	if err != nil {
 		return nil, err
@@ -183,6 +189,12 @@ func (d *davDir) Lookup(ctx context.Context, name string) (fs.Node, error) {
 }
 
 func (d *davDir) ReadDirAll(ctx context.Context) ([]fuse.Dirent, error) {
+	defer func() {
+		if r := recover(); r != nil {
+			log.Printf("[Volume FUSE] PANIC in ReadDirAll: %v", r)
+		}
+	}()
+
 	entries, err := d.list()
 	if err != nil {
 		return nil, err
@@ -247,15 +259,18 @@ func (d *davDir) Remove(ctx context.Context, req *fuse.RemoveRequest) error {
 }
 
 func (d *davDir) list() ([]davEntry, error) {
+	log.Printf("[Volume FUSE] PROPFIND %s Depth:1", d.client.baseURL+d.path)
 	resp, err := d.client.do("PROPFIND", d.path, nil, map[string]string{
 		"Depth": "1",
 	})
 	if err != nil {
+		log.Printf("[Volume FUSE] PROPFIND error: %v", err)
 		return nil, err
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != 207 && resp.StatusCode != 200 {
+		log.Printf("[Volume FUSE] PROPFIND failed: HTTP %d", resp.StatusCode)
 		return nil, fmt.Errorf("PROPFIND failed: HTTP %d", resp.StatusCode)
 	}
 
