@@ -389,7 +389,12 @@ func (f *davFile) Write(ctx context.Context, req *fuse.WriteRequest, resp *fuse.
 	copy(full, existing)
 	copy(full[req.Offset:], req.Data)
 
-	return f.writeAt(full, 0)
+	if err := f.writeAt(full, 0); err != nil {
+		return err
+	}
+
+	resp.Size = len(req.Data)
+	return nil
 }
 
 func (f *davFile) writeAt(data []byte, offset int64) error {
