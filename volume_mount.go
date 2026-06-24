@@ -1,7 +1,6 @@
 package main
 
 import (
-	"bufio"
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/json"
@@ -115,19 +114,26 @@ func (m *VolumeFUSEMount) connectP9() (*p9.Client, error) {
 		return nil, fmt.Errorf("failed to connect to %s: %w", addr, err)
 	}
 
-	// Pre-9p auth exchange
-	reader := bufio.NewReader(conn)
+	// Pre-9p auth exchange — read response without buffering
 	conn.Write([]byte(fmt.Sprintf("AUTH: %s\n", m.jwt)))
 
-	line, err := reader.ReadBytes('\n')
-	if err != nil {
-		conn.Close()
-		return nil, fmt.Errorf("failed to read auth response: %w", err)
+	var respLine []byte
+	one := make([]byte, 1)
+	for {
+		n, err := conn.Read(one)
+		if err != nil || n == 0 {
+			conn.Close()
+			return nil, fmt.Errorf("failed to read auth response: %w", err)
+		}
+		if one[0] == '\n' {
+			break
+		}
+		respLine = append(respLine, one[0])
 	}
 
-	if string(line) != "OK\n" {
+	if string(respLine) != "OK" {
 		conn.Close()
-		return nil, fmt.Errorf("authentication denied: %s", string(line))
+		return nil, fmt.Errorf("authentication denied: %s", string(respLine))
 	}
 
 	// Create 9p client
