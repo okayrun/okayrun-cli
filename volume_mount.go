@@ -153,8 +153,33 @@ func (d *davDir) Attr(ctx context.Context, a *fuse.Attr) error {
 }
 
 func (d *davDir) Lookup(ctx context.Context, name string) (fs.Node, error) {
-	childPath := d.path + name + "/"
-	return &davDir{client: d.client, path: childPath}, nil
+	childPath := d.path + name
+
+	// Try directory first (with trailing slash)
+	resp, err := d.client.do("PROPFIND", childPath+"/", nil, map[string]string{
+		"Depth": "0",
+	})
+	if err == nil {
+		resp.Body.Close()
+		if resp.StatusCode == 207 || resp.StatusCode == 200 {
+			return &davDir{client: d.client, path: childPath + "/"}, nil
+		}
+	}
+
+	// Try as file
+	resp2, err := d.client.do("PROPFIND", childPath, nil, map[string]string{
+		"Depth": "0",
+	})
+	if err != nil {
+		return nil, err
+	}
+	defer resp2.Body.Close()
+
+	if resp2.StatusCode == 404 {
+		return nil, fuse.ENOENT
+	}
+
+	return &davFile{client: d.client, path: childPath}, nil
 }
 
 func (d *davDir) ReadDirAll(ctx context.Context) ([]fuse.Dirent, error) {
