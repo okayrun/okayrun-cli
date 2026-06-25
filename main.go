@@ -1330,6 +1330,10 @@ func handleRun(image string, cmdArgs []string, verbose bool, ports []string, mem
 		if err != nil {
 			fmt.Println(err)
 		}
+		// Always terminate the session when the interactive console exits.
+		// This kills the VM immediately, ensuring exec sessions are dropped
+		// and volumes are torn down cleanly.
+		terminateSession(s.ID, cfg.Token)
 	} else {
 		wsURL := fmt.Sprintf("%s/sessions/%s/console?token=%s", WSBaseURL, s.ID, cfg.Token)
 		err = termBridge.ExecuteCommand(wsURL, strings.Join(cmdArgs, " "), cfg.Token, s.ID)
