@@ -1313,6 +1313,19 @@ func handleRun(image string, cmdArgs []string, verbose bool, ports []string, mem
 		return
 	}
 
+	// Catch Ctrl+C and terminate the session before exiting.
+	// Without this, the default SIGINT handler kills the process immediately,
+	// and terminateSession() never runs — leaving exec sessions connected
+	// to a running VM.
+	sigChan := make(chan os.Signal, 1)
+	signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
+	go func() {
+		<-sigChan
+		fmt.Println("\n\nTerminating session...")
+		terminateSession(s.ID, cfg.Token)
+		os.Exit(0)
+	}()
+
 	if isInteractive {
 		fmt.Printf("[3/3] Establishing interactive console bridge to virtual machine...\n\n")
 		fmt.Printf("Session ID:  %s\n", s.ID)
