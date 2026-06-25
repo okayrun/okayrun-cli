@@ -1198,6 +1198,9 @@ func handleRun(image string, cmdArgs []string, verbose bool, ports []string, mem
 	if disk != "" {
 		payload["disk_size"] = disk
 	}
+	if detach {
+		payload["detach"] = true
+	}
 	body, err := json.Marshal(payload)
 	if err != nil {
 		fmt.Printf("Error encoding request body: %v\n", err)
@@ -1226,12 +1229,6 @@ func handleRun(image string, cmdArgs []string, verbose bool, ports []string, mem
 	_ = json.NewDecoder(resp.Body).Decode(&s)
 
 	if detach {
-		fmt.Printf("[*] Starting application in detached mode...\n")
-		wsURL := fmt.Sprintf("%s/sessions/%s/console?token=%s", WSBaseURL, s.ID, cfg.Token)
-		err = termBridge.ExecuteCommand(wsURL, "nohup /bin/entrypoint-shell </dev/null >/dev/null 2>&1 &", cfg.Token, s.ID)
-		if err != nil {
-			fmt.Printf("Warning: failed to start entrypoint: %v\n", err)
-		}
 		fmt.Printf("%s\n", s.ID)
 		return
 	}
