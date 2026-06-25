@@ -681,7 +681,7 @@ func (r *RawOSTerminalBridge) ConnectInteractive(wsURL string, verbose bool, tok
 	}
 	defer func() {
 		term.Restore(stdinFd, oldState)
-		fmt.Print("\033[0m\033[?25h\033[?1049l\033[r\033[H")
+		fmt.Print("\033[0m\033[?25h")
 	}()
 
 	sshConfig := &ssh.ClientConfig{
@@ -814,7 +814,7 @@ func (r *RawOSTerminalBridge) ConnectInteractiveSerial(wsURL string, token, sess
 	}
 	defer func() {
 		term.Restore(stdinFd, oldState)
-		fmt.Print("\033[0m\033[?25h\033[?1049l\033[r\033[H")
+		fmt.Print("\033[0m\033[?25h")
 	}()
 
 	done := make(chan struct{})
