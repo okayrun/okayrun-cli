@@ -1414,6 +1414,12 @@ func (r *CLIRenderer) Render() {
 	// Move cursor up to overwrite previous render
 	if r.linesRendered > 0 {
 		fmt.Printf("\033[%dA", r.linesRendered)
+		// Clear all old lines completely
+		for i := 0; i < r.linesRendered; i++ {
+			fmt.Printf("\033[K\n")
+		}
+		// Move cursor back up to the start
+		fmt.Printf("\033[%dA", r.linesRendered)
 	}
 
 	frames := []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"}
@@ -1789,25 +1795,23 @@ func handleRun(image string, cmdArgs []string, verbose bool, ports []string, mem
 			renderer.phase3Status = "running"
 			renderer.startTime = time.Now()
 			renderer.mu.Unlock()
+			renderer.Render()
+
+			// Stop the renderer BEFORE starting the SSH session
+			// so the spinner doesn't overwrite the shell output
+			renderer.Stop()
 
 			wsURL := fmt.Sprintf("%s/sessions/%s/console", WSBaseURL, s.ID)
 			err = termBridge.ConnectInteractive(wsURL, verbose, cfg.Token, s.ID, s.Entrypoint, s.Cmd)
 
-			renderer.mu.Lock()
 			if err != nil {
-				renderer.phase3Status = "error"
-			} else {
-				renderer.phase3Status = "success"
-			}
-			renderer.phase3Elapsed = time.Since(renderer.startTime).Seconds()
-			renderer.mu.Unlock()
-			renderer.Stop()
-
-			if err != nil {
+				fmt.Printf("  \033[31m✗\033[0m  Failed to establish interactive console bridge\n\n")
 				fmt.Println(err)
+			} else {
+				fmt.Printf("  \033[32m✓\033[0m  Established interactive console bridge\n\n")
 			}
 
-			fmt.Printf("\n  Session ID:  %s\n", s.ID)
+			fmt.Printf("  Session ID:  %s\n", s.ID)
 			fmt.Printf("  Domain:      %s\n", s.V6Domain)
 			fmt.Printf("  Subnet IP:   %s\n", s.VMIPv6)
 			fmt.Printf("  Billing:     $%.2f/hour + $0.01 boot, billed per second\n", calculateHourlyRate(cpus, parseMemoryMB(memory), disk)/100.0)
