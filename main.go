@@ -1795,20 +1795,6 @@ func handleRun(image string, cmdArgs []string, verbose bool, ports []string, mem
 		if isInteractive {
 			renderer.Stop()
 
-			fmt.Printf("  \033[36m⠋\033[0m  Establishing interactive console bridge...\n")
-
-			wsURL := fmt.Sprintf("%s/sessions/%s/console", WSBaseURL, s.ID)
-			err = termBridge.ConnectInteractive(wsURL, verbose, cfg.Token, s.ID, s.Entrypoint, s.Cmd)
-
-			// Move up one line and overwrite with final status
-			fmt.Printf("\033[1A\033[K")
-			if err != nil {
-				fmt.Printf("  \033[31m✗\033[0m  Failed to establish interactive console bridge\n\n")
-				fmt.Println(err)
-			} else {
-				fmt.Printf("  \033[32m✓\033[0m  Established interactive console bridge\n\n")
-			}
-
 			fmt.Printf("  Session ID:  %s\n", s.ID)
 			fmt.Printf("  Domain:      %s\n", s.V6Domain)
 			fmt.Printf("  Subnet IP:   %s\n", s.VMIPv6)
@@ -1818,6 +1804,9 @@ func handleRun(image string, cmdArgs []string, verbose bool, ports []string, mem
 				fmt.Printf("  (verbose boot mode: raw console output enabled)\n\n")
 			}
 			fmt.Printf("  ⚡ MicroVM booting...\n\n")
+
+			wsURL := fmt.Sprintf("%s/sessions/%s/console", WSBaseURL, s.ID)
+			err = termBridge.ConnectInteractive(wsURL, verbose, cfg.Token, s.ID, s.Entrypoint, s.Cmd)
 
 			terminateSession(s.ID, cfg.Token)
 		}
