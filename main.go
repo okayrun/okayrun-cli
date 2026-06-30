@@ -1731,6 +1731,17 @@ func handleRun(image string, cmdArgs []string, verbose bool, ports []string, mem
 				}
 				if json.Unmarshal([]byte(dataLine), &status) == nil {
 					renderer.mu.Lock()
+					// If the most recent sub-step has the same stage, update
+					// it in place instead of appending a duplicate line.
+					if len(renderer.subSteps) > 0 {
+						last := &renderer.subSteps[len(renderer.subSteps)-1]
+						if last.Stage == status.Stage && last.Status == "running" {
+							last.Detail = status.Detail
+							last.StartTime = time.Now()
+							renderer.mu.Unlock()
+							continue
+						}
+					}
 					// Mark previous active sub-steps as success
 					for idx, sub := range renderer.subSteps {
 						if sub.Status == "running" {
