@@ -111,21 +111,23 @@ func getProxyConfig() *ProxyConfig {
 
 // newHTTPClient returns an *http.Client configured with the resolved proxy
 // and TLS settings. Each call returns a new client with its own transport.
-func newHTTPClient(timeout time.Duration) *http.Client {
+func newHTTPTransport() *http.Transport {
 	pc := getProxyConfig()
-
-	transport := &http.Transport{
+	tr := &http.Transport{
 		TLSClientConfig: &tls.Config{
 			InsecureSkipVerify: pc.TLSSkipVerify,
 		},
 	}
 	if pc.ProxyURL != nil {
-		transport.Proxy = http.ProxyURL(pc.ProxyURL)
+		tr.Proxy = http.ProxyURL(pc.ProxyURL)
 	}
+	return tr
+}
 
+func newHTTPClient(timeout time.Duration) *http.Client {
 	return &http.Client{
 		Timeout:   timeout,
-		Transport: transport,
+		Transport: newHTTPTransport(),
 	}
 }
 
@@ -837,7 +839,7 @@ func (r *RawOSTerminalBridge) ConnectInteractive(wsURL string, verbose bool, tok
 			ssh.Password(""),
 		},
 		HostKeyCallback: ssh.InsecureIgnoreHostKey(),
-		Timeout:         10 * time.Second,
+		Timeout:         20 * time.Second,
 	}
 
 	conn, chans, reqs, err := ssh.NewClientConn(wsConn, "localhost:22", sshConfig)
@@ -1701,6 +1703,12 @@ func handleRun(image string, cmdArgs []string, verbose bool, ports []string, mem
 	}
 
 	spawnClient := newHTTPClient(120 * time.Second)
+	if isInteractive {
+		// SSE streaming: no client-level Timeout. The Timeout field
+		// covers the entire response body read and would kill the
+		// connection once provisioning exceeds the budget.
+		spawnClient = &http.Client{Transport: newHTTPTransport()}
+	}
 	resp, err := spawnClient.Do(req)
 	if err != nil {
 		fmt.Printf("Error running VM: %v\n", err)
