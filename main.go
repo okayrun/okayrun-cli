@@ -1529,7 +1529,7 @@ func handleRun(image string, cmdArgs []string, verbose bool, ports []string, mem
 		return
 	}
 
-	isInteractive := interactive || (len(cmdArgs) == 0 && !detach)
+	isInteractive := interactive
 
 	renderer := &CLIRenderer{
 		isInteractive: isInteractive,
@@ -1818,13 +1818,15 @@ func handleRun(image string, cmdArgs []string, verbose bool, ports []string, mem
 			}
 			fmt.Printf("  ⚡ MicroVM booting...\n\n")
 
-wsURL := fmt.Sprintf("%s/sessions/%s/console", WSBaseURL, s.ID)
-			if isInteractive {
-				wsURL += "?console=ssh"
-			}
+			wsURL := fmt.Sprintf("%s/sessions/%s/console?console=ssh", WSBaseURL, s.ID)
 			err = termBridge.ConnectInteractive(wsURL, verbose, cfg.Token, s.ID, s.Entrypoint, s.Cmd)
 
 			terminateSession(s.ID, cfg.Token)
+		} else if len(cmdArgs) == 0 && !detach {
+			// Serial console mode: stream output without PTY
+			renderer.Stop()
+			wsURL := fmt.Sprintf("%s/sessions/%s/console", WSBaseURL, s.ID)
+			err = termBridge.ConnectInteractiveSerial(wsURL, cfg.Token, s.ID)
 		}
 		return
 	}
@@ -1857,7 +1859,7 @@ wsURL := fmt.Sprintf("%s/sessions/%s/console", WSBaseURL, s.ID)
 		}
 		fmt.Printf("  ⚡ MicroVM booting...\n\n")
 
-		wsURL := fmt.Sprintf("%s/sessions/%s/console", WSBaseURL, s.ID)
+		wsURL := fmt.Sprintf("%s/sessions/%s/console?console=ssh", WSBaseURL, s.ID)
 		err = termBridge.ConnectInteractive(wsURL, verbose, cfg.Token, s.ID, s.Entrypoint, s.Cmd)
 		if err != nil {
 			fmt.Println(err)
@@ -1866,6 +1868,13 @@ wsURL := fmt.Sprintf("%s/sessions/%s/console", WSBaseURL, s.ID)
 		// This kills the VM immediately, ensuring exec sessions are dropped
 		// and volumes are torn down cleanly.
 		terminateSession(s.ID, cfg.Token)
+	} else if len(cmdArgs) == 0 {
+		// Serial console mode: stream output without PTY
+		wsURL := fmt.Sprintf("%s/sessions/%s/console", WSBaseURL, s.ID)
+		err = termBridge.ConnectInteractiveSerial(wsURL, cfg.Token, s.ID)
+		if err != nil {
+			fmt.Println(err)
+		}
 	} else {
 		wsURL := fmt.Sprintf("%s/sessions/%s/console", WSBaseURL, s.ID)
 		err = termBridge.ExecuteCommand(wsURL, strings.Join(cmdArgs, " "), cfg.Token, s.ID)
