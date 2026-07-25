@@ -273,13 +273,13 @@ func main() {
 			}
 			handleComposeRun(composePath, verbose)
 		} else {
-			verbose, ports, memory, cpus, disk, envVars, name, detach, volumes, image, cmdArgs := parseRunArgs(os.Args[2:])
+			verbose, ports, memory, cpus, disk, envVars, name, detach, volumes, interactive, image, cmdArgs := parseRunArgs(os.Args[2:])
 			if image == "" {
 				fmt.Println("Error: Missing image argument.")
-				fmt.Println("Usage: okay run [--verbose] [-e/--env <key=val>] [--name <name>] [-d] [-v/--volume <name:mount>] [-p/--publish <port>] [--memory <size>] [--cpus <count>] [--disk <size>] <image> [command...]")
+				fmt.Println("Usage: okay run [--verbose] [-e/--env <key=val>] [--name <name>] [-d] [-it] [-v/--volume <name:mount>] [-p/--publish <port>] [--memory <size>] [--cpus <count>] [--disk <size>] <image> [command...]")
 				return
 			}
-			handleRun(image, cmdArgs, verbose, ports, memory, cpus, disk, envVars, name, detach, volumes)
+			handleRun(image, cmdArgs, verbose, ports, memory, cpus, disk, envVars, name, detach, volumes, interactive)
 		}
 	case "stop":
 		if len(os.Args) < 3 {
@@ -1072,7 +1072,7 @@ func (r *RawOSTerminalBridge) ExecuteCommand(wsURL, commandStr string, token, se
 // parseRunArgs splits the os.Args slice passed after "run" into its components.
 // A --verbose flag appearing anywhere in args is extracted; the first remaining
 // positional argument is the image; any remaining arguments are cmdArgs.
-func parseRunArgs(args []string) (verbose bool, ports []string, memory string, cpus int, disk string, envVars []string, name string, detach bool, volumes []string, image string, cmdArgs []string) {
+func parseRunArgs(args []string) (verbose bool, ports []string, memory string, cpus int, disk string, envVars []string, name string, detach bool, volumes []string, interactive bool, image string, cmdArgs []string) {
 	var positional []string
 	for i := 0; i < len(args); i++ {
 		a := args[i]
@@ -1094,6 +1094,8 @@ func parseRunArgs(args []string) (verbose bool, ports []string, memory string, c
 			name = strings.TrimPrefix(a, "--name=")
 		} else if a == "-d" || a == "--detach" {
 			detach = true
+		} else if a == "-it" || a == "--interactive" {
+			interactive = true
 		} else if a == "-v" || a == "--volume" {
 			if i+1 < len(args) {
 				volumes = append(volumes, args[i+1])
@@ -1520,14 +1522,14 @@ func rawStageIcon(stage string) string {
 	}
 }
 
-func handleRun(image string, cmdArgs []string, verbose bool, ports []string, memory string, cpus int, disk string, envVars []string, name string, detach bool, volumeRefs []string) {
+func handleRun(image string, cmdArgs []string, verbose bool, ports []string, memory string, cpus int, disk string, envVars []string, name string, detach bool, volumeRefs []string, interactive bool) {
 	cfg, err := loadConfig()
 	if err != nil {
 		fmt.Println("Error: You are not logged in. Please run: okay login")
 		return
 	}
 
-	isInteractive := len(cmdArgs) == 0 && !detach
+	isInteractive := interactive || (len(cmdArgs) == 0 && !detach)
 
 	renderer := &CLIRenderer{
 		isInteractive: isInteractive,
