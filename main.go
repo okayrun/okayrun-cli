@@ -1816,7 +1816,10 @@ func handleRun(image string, cmdArgs []string, verbose bool, ports []string, mem
 			}
 			fmt.Printf("  ⚡ MicroVM booting...\n\n")
 
-			wsURL := fmt.Sprintf("%s/sessions/%s/console", WSBaseURL, s.ID)
+wsURL := fmt.Sprintf("%s/sessions/%s/console", WSBaseURL, s.ID)
+			if isInteractive {
+				wsURL += "?console=ssh"
+			}
 			err = termBridge.ConnectInteractive(wsURL, verbose, cfg.Token, s.ID, s.Entrypoint, s.Cmd)
 
 			terminateSession(s.ID, cfg.Token)
