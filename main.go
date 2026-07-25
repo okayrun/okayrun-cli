@@ -1820,6 +1820,9 @@ func handleRun(image string, cmdArgs []string, verbose bool, ports []string, mem
 
 			wsURL := fmt.Sprintf("%s/sessions/%s/console?console=ssh", WSBaseURL, s.ID)
 			err = termBridge.ConnectInteractive(wsURL, verbose, cfg.Token, s.ID, s.Entrypoint, s.Cmd)
+			if err != nil {
+				fmt.Println(err)
+			}
 
 			terminateSession(s.ID, cfg.Token)
 		} else if len(cmdArgs) == 0 && !detach {
