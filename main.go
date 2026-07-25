@@ -1825,8 +1825,15 @@ func handleRun(image string, cmdArgs []string, verbose bool, ports []string, mem
 		} else if len(cmdArgs) == 0 && !detach {
 			// Serial console mode: stream output without PTY
 			renderer.Stop()
+			fmt.Printf("  Session ID:  %s\n", s.ID)
+			fmt.Printf("  Domain:      %s\n", s.V6Domain)
+			fmt.Printf("  Subnet IP:   %s\n", s.VMIPv6)
+			fmt.Printf("  Billing:     $%.2f/hour + $0.01 boot, billed per second\n", calculateHourlyRate(cpus, parseMemoryMB(memory), disk)/100.0)
 			wsURL := fmt.Sprintf("%s/sessions/%s/console", WSBaseURL, s.ID)
-			err = termBridge.ConnectInteractiveSerial(wsURL, cfg.Token, s.ID)
+			if err := termBridge.ConnectInteractiveSerial(wsURL, cfg.Token, s.ID); err != nil {
+				fmt.Printf("Serial console error: %v\n", err)
+			}
+			terminateSession(s.ID, cfg.Token)
 		}
 		return
 	}
